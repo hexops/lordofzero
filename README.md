@@ -1,4 +1,4 @@
-# SYCL24 game
+# Lord of Zero
 
 TODO
 
