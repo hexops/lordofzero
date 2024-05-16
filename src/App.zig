@@ -17,6 +17,7 @@ const Mat4x4 = math.Mat4x4;
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
 timer: mach.Timer,
+sprite_time: f32 = 0.0,
 player: mach.EntityID,
 direction: Vec2 = vec2(0, 0),
 spawning: bool = false,
@@ -30,6 +31,7 @@ allocator: std.mem.Allocator,
 pipeline: mach.EntityID,
 frame_encoder: *gpu.CommandEncoder = undefined,
 frame_render_pass: *gpu.RenderPassEncoder = undefined,
+atlas: loader.Atlas = undefined,
 
 // Define the globally unique name of our module. You can use any name here, but keep in mind no
 // two modules in the program can have the same name.
@@ -80,6 +82,7 @@ fn afterInit(
     sprite_pipeline.schedule(.update);
 
     const atlas = try loader.Atlas.initFromFile(std.heap.c_allocator, "src/assets/spritesheet.atlas");
+
     // defer atlas.deinit(std.testing.allocator);
     std.debug.print("loaded sprite atlas: {} sprites, {} animations\n", .{ atlas.sprites.len, atlas.animations.len });
 
@@ -89,8 +92,6 @@ fn afterInit(
         const sprite_info = atlas.sprites[i];
 
         if (std.mem.startsWith(u8, sprite_info.name, "logo_0_")) {
-            const grid_height = 160;
-
             std.debug.print("sprite: {s} origin={any} source={any}\n", .{ sprite_info.name, sprite_info.origin, sprite_info.source });
             // const width = sprite_info.source[0] - sprite_info.source[2];
             // const height = sprite_info.source[1] - sprite_info.source[3];
@@ -104,17 +105,13 @@ fn afterInit(
             const origin_x = sprite_info.origin[0];
             const origin_y = sprite_info.origin[1];
             const origin = vec3(@floatFromInt(origin_x), @floatFromInt(origin_y), 0);
-            _ = origin;
             // _ = grid_height;
 
             // Create our player sprite
             const player = try entities.new();
 
-            const oy: f32 = if (std.mem.startsWith(u8, sprite_info.name, "logo_0_brick")) 65 else 0;
             try sprite.set(player, .transform, Mat4x4.scaleScalar(1.0).mul(
-                //&Mat4x4.translate(vec3(@floatFromInt(x), @as(f32, @floatFromInt(y)) - @as(f32, @floatFromInt(height)), 0)),
-                &Mat4x4.translate(vec3(0, -grid_height + oy, 0)),
-                // &Mat4x4.translate(vec3(0, -origin.v[1], 0)),
+                &Mat4x4.translate(vec3(0, -@as(f32, @floatFromInt(height)), 0).add(&origin)),
             ));
 
             // if (std.mem.startsWith(u8, sprite_info.name, "logo_0_brick")) {
@@ -149,7 +146,7 @@ fn afterInit(
             const origin = vec3(@floatFromInt(origin_x), @floatFromInt(origin_y), 0);
 
             try sprite.set(player, .transform, Mat4x4.scaleScalar(1.0).mul(
-                &Mat4x4.translate(vec3(0, 0, 0).add(&origin)),
+                &Mat4x4.translate(vec3(0, -@as(f32, @floatFromInt(height)), 0).sub(&origin)),
             ));
             try sprite.set(player, .size, vec2(@floatFromInt(width), @floatFromInt(height)));
             try sprite.set(player, .uv_transform, Mat3x3.translate(vec2(@floatFromInt(x), @floatFromInt(y))));
@@ -173,6 +170,7 @@ fn afterInit(
         .time = 0,
         .allocator = allocator,
         .pipeline = pipeline,
+        .atlas = atlas,
     });
 
     core.schedule(.start);
@@ -216,25 +214,6 @@ fn tick(
     game.state().direction = direction;
     game.state().spawning = spawning;
 
-    // var player_transform = sprite.get(game.state().player, .transform).?;
-    // var player_pos = player_transform.translation();
-    // if (spawning and game.state().spawn_timer.read() > 1.0 / 60.0) {
-    //     // Spawn new entities
-    //     _ = game.state().spawn_timer.lap();
-    //     for (0..100) |_| {
-    //         var new_pos = player_pos;
-    //         new_pos.v[0] += game.state().rand.random().floatNorm(f32) * 25;
-    //         new_pos.v[1] += game.state().rand.random().floatNorm(f32) * 25;
-
-    //         const new_entity = try entities.new();
-    //         try sprite.set(new_entity, .transform, Mat4x4.translate(new_pos).mul(&Mat4x4.scale(Vec3.splat(0.3))));
-    //         try sprite.set(new_entity, .size, vec2(32, 32));
-    //         try sprite.set(new_entity, .uv_transform, Mat3x3.translate(vec2(0, 0)));
-    //         try sprite.set(new_entity, .pipeline, game.state().pipeline);
-    //         game.state().sprites += 1;
-    //     }
-    // }
-
     // Multiply by delta_time to ensure that movement is the same speed regardless of the frame rate.
     const delta_time = game.state().timer.lap();
 
@@ -262,6 +241,30 @@ fn tick(
     // player_pos.v[0] += direction.x() * speed * delta_time;
     // player_pos.v[1] += direction.y() * speed * delta_time;
     // try sprite.set(game.state().player, .transform, Mat4x4.translate(player_pos).mul(&Mat4x4.scaleScalar(1.0)));
+
+    const animation_info = game.state().atlas.animations[3]; //3 == wrench_upgrade
+    const fps: f32 = @floatFromInt(animation_info.fps);
+
+    if (game.state().sprite_time < 1.0) {
+        game.state().sprite_time += delta_time;
+    } else {
+        game.state().sprite_time = 0.0;
+    }
+
+    const i: usize = @intFromFloat(game.state().sprite_time * (fps - 1.0));
+
+    const sprite_info: loader.Sprite = game.state().atlas.sprites[animation_info.start + i];
+    const player = game.state().player;
+
+    const x = sprite_info.source[0];
+    const y = sprite_info.source[1];
+    const width = sprite_info.source[2];
+    const height = sprite_info.source[3];
+    try sprite.set(player, .size, vec2(@floatFromInt(width), @floatFromInt(height)));
+    try sprite.set(player, .uv_transform, Mat3x3.translate(vec2(@floatFromInt(x), @floatFromInt(y))));
+
+    std.log.debug("called! {d}", .{i});
+
     sprite.schedule(.update);
 
     // Perform pre-render work
