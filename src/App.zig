@@ -104,14 +104,14 @@ fn afterInit(
 
             const origin_x = sprite_info.origin[0];
             const origin_y = sprite_info.origin[1];
-            const origin = vec3(@floatFromInt(origin_x), @floatFromInt(origin_y), 0);
+            const origin = vec3(@floatFromInt(origin_x), -@as(f32, @floatFromInt(origin_y)), 0);
             // _ = grid_height;
 
             // Create our player sprite
             const player = try entities.new();
 
             try sprite.set(player, .transform, Mat4x4.scaleScalar(1.0).mul(
-                &Mat4x4.translate(vec3(0, -@as(f32, @floatFromInt(height)), 0).add(&origin)),
+                &Mat4x4.translate(vec3(0, -@as(f32, @floatFromInt(height)), 0).sub(&origin)),
             ));
 
             // if (std.mem.startsWith(u8, sprite_info.name, "logo_0_brick")) {
@@ -143,10 +143,10 @@ fn afterInit(
 
             const origin_x = sprite_info.origin[0];
             const origin_y = sprite_info.origin[1];
-            const origin = vec3(@floatFromInt(origin_x), @floatFromInt(origin_y), 0);
+            const origin = vec3(@floatFromInt(origin_x), -@as(f32, @floatFromInt(origin_y)), 0);
 
             try sprite.set(player, .transform, Mat4x4.scaleScalar(1.0).mul(
-                &Mat4x4.translate(vec3(0, -@as(f32, @floatFromInt(height)), 0).add(&origin)),
+                &Mat4x4.translate(vec3(0, -@as(f32, @floatFromInt(height)), 0).sub(&origin)),
             ));
             try sprite.set(player, .size, vec2(@floatFromInt(width), @floatFromInt(height)));
             try sprite.set(player, .uv_transform, Mat3x3.translate(vec2(@floatFromInt(x), @floatFromInt(y))));
@@ -242,6 +242,14 @@ fn tick(
     // player_pos.v[1] += direction.y() * speed * delta_time;
     // try sprite.set(game.state().player, .transform, Mat4x4.translate(player_pos).mul(&Mat4x4.scaleScalar(1.0)));
 
+    const screen_size = mach.core.size();
+
+    const half_screen: [2]f32 = .{ @as(f32, @floatFromInt(screen_size.width)) / 2.0, @as(f32, @floatFromInt(screen_size.height)) / 2.0 };
+
+    const mouse_position = mach.core.mousePosition();
+
+    const player_position: [2]f32 = .{ @as(f32, @floatCast(mouse_position.x)) - half_screen[0], -@as(f32, @floatCast(mouse_position.y)) + half_screen[1] };
+
     const animation_info: loader.Animation = game.state().atlas.animations[3]; //3 == wrench_upgrade
     const animation_len: f32 = @floatFromInt(animation_info.length);
 
@@ -263,10 +271,10 @@ fn tick(
 
     const origin_x = sprite_info.origin[0];
     const origin_y = sprite_info.origin[1];
-    const origin = vec3(@floatFromInt(origin_x), @floatFromInt(origin_y), 0);
+    const origin = vec3(@floatFromInt(origin_x), -@as(f32, @floatFromInt(origin_y)), 0);
 
     try sprite.set(player, .transform, Mat4x4.scaleScalar(1.0).mul(
-        &Mat4x4.translate(vec3(0, -@as(f32, @floatFromInt(height)), 0).add(&origin)),
+        &Mat4x4.translate(vec3(player_position[0], player_position[1] - @as(f32, @floatFromInt(height)), 0).sub(&origin)),
     ));
 
     try sprite.set(player, .size, vec2(@floatFromInt(width), @floatFromInt(height)));
