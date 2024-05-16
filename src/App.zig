@@ -146,7 +146,7 @@ fn afterInit(
             const origin = vec3(@floatFromInt(origin_x), @floatFromInt(origin_y), 0);
 
             try sprite.set(player, .transform, Mat4x4.scaleScalar(1.0).mul(
-                &Mat4x4.translate(vec3(0, -@as(f32, @floatFromInt(height)), 0).sub(&origin)),
+                &Mat4x4.translate(vec3(0, -@as(f32, @floatFromInt(height)), 0).add(&origin)),
             ));
             try sprite.set(player, .size, vec2(@floatFromInt(width), @floatFromInt(height)));
             try sprite.set(player, .uv_transform, Mat3x3.translate(vec2(@floatFromInt(x), @floatFromInt(y))));
@@ -242,8 +242,8 @@ fn tick(
     // player_pos.v[1] += direction.y() * speed * delta_time;
     // try sprite.set(game.state().player, .transform, Mat4x4.translate(player_pos).mul(&Mat4x4.scaleScalar(1.0)));
 
-    const animation_info = game.state().atlas.animations[3]; //3 == wrench_upgrade
-    const fps: f32 = @floatFromInt(animation_info.fps);
+    const animation_info: loader.Animation = game.state().atlas.animations[3]; //3 == wrench_upgrade
+    const animation_len: f32 = @floatFromInt(animation_info.length);
 
     if (game.state().sprite_time < 1.0) {
         game.state().sprite_time += delta_time;
@@ -251,7 +251,7 @@ fn tick(
         game.state().sprite_time = 0.0;
     }
 
-    const i: usize = @intFromFloat(game.state().sprite_time * (fps - 1.0));
+    const i: usize = @intFromFloat(game.state().sprite_time * (animation_len - 1.0));
 
     const sprite_info: loader.Sprite = game.state().atlas.sprites[animation_info.start + i];
     const player = game.state().player;
@@ -260,6 +260,15 @@ fn tick(
     const y = sprite_info.source[1];
     const width = sprite_info.source[2];
     const height = sprite_info.source[3];
+
+    const origin_x = sprite_info.origin[0];
+    const origin_y = sprite_info.origin[1];
+    const origin = vec3(@floatFromInt(origin_x), @floatFromInt(origin_y), 0);
+
+    try sprite.set(player, .transform, Mat4x4.scaleScalar(1.0).mul(
+        &Mat4x4.translate(vec3(0, -@as(f32, @floatFromInt(height)), 0).add(&origin)),
+    ));
+
     try sprite.set(player, .size, vec2(@floatFromInt(width), @floatFromInt(height)));
     try sprite.set(player, .uv_transform, Mat3x3.translate(vec2(@floatFromInt(x), @floatFromInt(y))));
 
