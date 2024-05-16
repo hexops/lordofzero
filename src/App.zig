@@ -280,8 +280,6 @@ fn tick(
     try sprite.set(player, .size, vec2(@floatFromInt(width), @floatFromInt(height)));
     try sprite.set(player, .uv_transform, Mat3x3.translate(vec2(@floatFromInt(x), @floatFromInt(y))));
 
-    std.log.debug("called! {d}", .{i});
-
     sprite.schedule(.update);
 
     // Perform pre-render work
