@@ -4,12 +4,17 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const assets = b.addModule("assets", .{
+        .root_source_file = .{ .path = "assets/main.zig" },
+    });
+
     const exe = b.addExecutable(.{
-        .name = "step-01",
+        .name = "lordofzero",
         .root_source_file = .{ .path = "src/main.zig" },
         .target = target,
         .optimize = optimize,
     });
+    exe.root_module.addImport("assets", assets);
     b.installArtifact(exe);
 
     // Add Mach dependency

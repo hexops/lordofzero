@@ -22,28 +22,31 @@ pub const Animation = struct {
 pub const Atlas = struct {
     sprites: []Sprite,
     animations: []Animation,
+    parsed: *std.json.Parsed(Atlas.Data),
 
-    pub fn initFromFile(allocator: std.mem.Allocator, file: [:0]const u8) !Atlas {
-        const read = try std.fs.cwd().readFileAlloc(allocator, file, 1024 * 1024);
-        defer allocator.free(read);
+    const Data = struct {
+        sprites: []Sprite,
+        animations: []Animation,
+    };
 
-        const parsed = try std.json.parseFromSlice(
-            Atlas,
+    pub fn init(allocator: std.mem.Allocator, json: []const u8) !Atlas {
+        var parsed = try allocator.create(std.json.Parsed(Atlas.Data));
+        errdefer parsed.deinit();
+        parsed.* = try std.json.parseFromSlice(
+            Atlas.Data,
             allocator,
-            read,
+            json,
             .{ .duplicate_field_behavior = .use_first, .ignore_unknown_fields = true },
         );
-        defer parsed.deinit();
-
         return .{
-            .sprites = try allocator.dupe(Sprite, parsed.value.sprites),
-            .animations = try allocator.dupe(Animation, parsed.value.animations),
+            .sprites = parsed.value.sprites,
+            .animations = parsed.value.animations,
+            .parsed = parsed,
         };
     }
 
-    pub fn deinit(atlas: Atlas, allocator: std.mem.Allocator) void {
-        allocator.free(atlas.sprites);
-        allocator.free(atlas.animations);
+    pub fn deinit(atlas: Atlas) void {
+        atlas.parsed.deinit();
     }
 };
 

@@ -4,6 +4,8 @@ const mach = @import("mach");
 pub const modules = .{
     mach.Core,
     mach.gfx.sprite_modules,
+    mach.Audio,
+    mach.gfx.text_modules,
     @import("App.zig"),
 };
 
