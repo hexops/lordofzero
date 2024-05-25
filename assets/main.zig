@@ -6,6 +6,9 @@ pub const bgm = struct {
 };
 
 pub const sfx = struct {
+    pub const fire = @embedFile("sfx/fire.opus");
+    pub const footsteps = @embedFile("sfx/footsteps.opus");
+    pub const freeze = @embedFile("sfx/freeze.opus");
     pub const morning_bells = @embedFile("sfx/morning_bells.opus");
 };
 
