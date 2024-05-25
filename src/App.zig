@@ -508,11 +508,6 @@ fn tick(
             const y: f32 = @floatFromInt(sprite_info.source[1]);
             const width: f32 = @floatFromInt(sprite_info.source[2]);
             const height: f32 = @floatFromInt(sprite_info.source[3]);
-            const origin = vec3(
-                @floatFromInt(sprite_info.origin[0]),
-                -@as(f32, @floatFromInt(sprite_info.origin[1])),
-                0,
-            );
 
             // Player moves in the direction of the keyboard input
             const dir = if (app.state().is_attacking) app.state().direction.mulScalar(0.5) else app.state().direction;
@@ -524,6 +519,14 @@ fn tick(
                 &vec3(dir.v[0], dir.v[1], 0).mulScalar(speed).mulScalar(delta_time),
             );
             app.state().player_position = pos;
+
+            const flipped: bool = app.state().last_facing_direction.v[0] < 0;
+
+            const origin = vec3(
+                if (!flipped) @floatFromInt(sprite_info.origin[0]) else -@as(f32, @floatFromInt(sprite_info.origin[0])) + width,
+                -@as(f32, @floatFromInt(sprite_info.origin[1])),
+                0,
+            );
 
             const scale = Mat4x4.scaleScalar(2.0);
             const translate = Mat4x4.translate(pos);
@@ -538,29 +541,30 @@ fn tick(
             // If the player is moving left instead of right, then flip the sprite so it renders
             // facing the left instead of its natural right-facing direction.
             var uv_transform = Mat3x3.translate(vec2(x, y));
-            if ((foxnne_debug and i % 2 == 0) or (!foxnne_debug and app.state().last_facing_direction.v[0] < 0)) {
+            if ((foxnne_debug and i % 2 == 0) or (!foxnne_debug and flipped)) {
                 // Determine the max size of any sprite layer of our player
-                const max_sprite_size: Vec2 = blk: {
-                    var max = vec2(0, 0);
-                    for (app.state().atlas.sprites[animation_info.start .. animation_info.start + animation_info.length]) |s_info| {
-                        max.v[0] = @max(max.v[0], @as(f32, @floatFromInt(s_info.source[2])));
-                        max.v[1] = @max(max.v[1], @as(f32, @floatFromInt(s_info.source[3])));
-                    }
-                    break :blk max;
-                };
+                // const max_sprite_size: Vec2 = blk: {
+                //     var max = vec2(0, 0);
+                //     for (app.state().atlas.sprites[animation_info.start .. animation_info.start + animation_info.length]) |s_info| {
+                //         max.v[0] = @max(max.v[0], @as(f32, @floatFromInt(s_info.source[2])));
+                //         max.v[1] = @max(max.v[1], @as(f32, @floatFromInt(s_info.source[3])));
+                //     }
+                //     break :blk max;
+                // };
+                // _ = max_sprite_size; // autofix
 
                 const uv_flip_horizontally = Mat3x3.scale(vec2(-1, 1));
                 const uv_origin_shift = Mat3x3.translate(vec2(width, 0));
                 const uv_translate = Mat3x3.translate(vec2(x, y));
                 uv_transform = uv_origin_shift.mul(&uv_translate).mul(&uv_flip_horizontally);
 
-                const origin_shift = max_sprite_size.v[0] - width;
-                const org_shift = Mat4x4.translate(vec3(origin_shift, 0, 0));
-                try sprite.set(
-                    player,
-                    .transform,
-                    translate.mul(&scale).mul(&org).mul(&org_shift),
-                );
+                // const origin_shift = origin.x() - width;
+                // const org_shift = Mat4x4.translate(vec3(origin_shift, origin.y() + height, 0));
+                // try sprite.set(
+                //     player,
+                //     .transform,
+                //     translate.mul(&scale).mul(&org_shift),
+                // );
             }
             try sprite.set(player, .uv_transform, uv_transform);
 
