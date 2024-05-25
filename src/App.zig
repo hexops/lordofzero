@@ -48,7 +48,7 @@ const Scene = enum {
 
 const world_scale = 3.0;
 
-const foxnne_debug = false;
+const foxnne_debug = true;
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -520,10 +520,10 @@ fn tick(
             );
             app.state().player_position = pos;
 
-            const flipped: bool = app.state().last_facing_direction.v[0] < 0;
+            const flipped: bool = (foxnne_debug and i % 2 == 0) or (!foxnne_debug and app.state().last_facing_direction.v[0] < 0);
 
             const origin = vec3(
-                if (!flipped) @floatFromInt(sprite_info.origin[0]) else -@as(f32, @floatFromInt(sprite_info.origin[0])) + width,
+                if (!flipped) @floatFromInt(sprite_info.origin[0]) else width - @as(f32, @floatFromInt(sprite_info.origin[0])),
                 -@as(f32, @floatFromInt(sprite_info.origin[1])),
                 0,
             );
