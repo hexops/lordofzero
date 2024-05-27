@@ -1,0 +1,29 @@
+{
+	"identifier": "Level_0",
+	"uniqueIdentifer": "933383c0-fec0-11ee-ad03-cdb4632361a1",
+	"x": 0,
+	"y": 0,
+	"width": 256,
+	"height": 256,
+	"bgColor": "#696A79",
+	"neighbourLevels": [],
+	"customFields" : {},
+	"layers": [
+		"Tiles.png"
+	],
+	"entities": {
+		"Entity": [
+			{
+				"id": "Entity",
+				"iid": "676b2780-fec0-11ee-929b-3730bd3ca673",
+				"layer": "Entities",
+				"x": 62,
+				"y": 89,
+				"width": 16,
+				"height": 16,
+				"color": 12470831,
+				"customFields" : {}
+			}
+		]
+	}
+}
