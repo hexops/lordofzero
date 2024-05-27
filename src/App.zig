@@ -79,7 +79,7 @@ text_pipeline: mach.EntityID,
 frame_encoder: *gpu.CommandEncoder = undefined,
 frame_render_pass: *gpu.RenderPassEncoder = undefined,
 atlas: loader.Atlas = undefined,
-scene: Scene = .start,
+scene: Scene = .game,
 prev_scene: Scene = .none,
 
 fn deinit(
@@ -388,6 +388,7 @@ fn updateEffects(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mo
         for (v.ids, v.timers, v.flips, v.positions) |id, *timer, flip, position| {
             const attack_fx = id;
             const effect_animation_name = "ground_attack_main";
+            const effect_dissolve_name = "ground_attack_dissolve_main";
 
             const effect_animation_info: loader.Animation = blk: {
                 for (app.state().atlas.animations) |anim| {
@@ -396,14 +397,26 @@ fn updateEffects(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mo
                 @panic("cannot find animation");
             };
 
+            const dissolve_animation_info: loader.Animation = blk: {
+                for (app.state().atlas.animations) |anim| {
+                    if (std.mem.eql(u8, anim.name, effect_dissolve_name)) break :blk anim;
+                }
+                @panic("cannot find animation");
+            };
+
             // Determine the next player animation frame
             const animation_fps: f32 = @floatFromInt(effect_animation_info.fps);
-            var i: usize = @intFromFloat(timer.read() * animation_fps);
-            if (i >= effect_animation_info.length) {
-                timer.reset();
-                i = 0;
+            const i: usize = @intFromFloat(timer.read() * animation_fps);
+
+            if (i > (effect_animation_info.length + dissolve_animation_info.length) - 2) {
+                try entities.remove(id);
+                continue;
             }
-            const effect_sprite_info: loader.Sprite = app.state().atlas.sprites[effect_animation_info.start + i];
+
+            const effect_sprite_info: loader.Sprite = if (i > effect_animation_info.length)
+                app.state().atlas.sprites[dissolve_animation_info.start + (i - effect_animation_info.length)]
+            else
+                app.state().atlas.sprites[effect_animation_info.start + i];
 
             var z_layer: f32 = 0;
 
@@ -765,6 +778,8 @@ fn tick(
     // Perform pre-render work
     sprite_pipeline.schedule(.pre_render);
     text_pipeline.schedule(.pre_render);
+
+    app.schedule(.update_effects);
 
     // Create a command encoder for this frame
     const label = @tagName(name) ++ ".tick";
