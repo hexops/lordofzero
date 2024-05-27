@@ -50,7 +50,8 @@ const Scene = enum {
     game,
 };
 
-const world_scale = 3.0;
+const start_scale = 3.0;
+const world_scale = 2.0;
 
 const foxnne_debug = false;
 
@@ -300,7 +301,7 @@ fn updateScene(
                 );
 
                 const id = try entities.new();
-                const scale = Mat4x4.scaleScalar(world_scale);
+                const scale = Mat4x4.scaleScalar(start_scale);
                 const translate = Mat4x4.translate(vec3(
                     -220,
                     140,
@@ -670,7 +671,6 @@ fn tick(
                     const uv_translate = Mat3x3.translate(vec2(effect_x, effect_y));
                     uv_transform = uv_origin_shift.mul(&uv_translate).mul(&uv_flip_horizontally);
                 }
-                try sprite.set(attack_fx, .uv_transform, uv_transform);
 
                 try sprite.set(attack_fx, .size, vec2(effect_width, effect_height));
                 try sprite.set(attack_fx, .uv_transform, uv_transform);
@@ -687,7 +687,7 @@ fn tick(
                 0,
             );
 
-            const scale = Mat4x4.scaleScalar(2.0);
+            const scale = Mat4x4.scaleScalar(world_scale);
             const translate = Mat4x4.translate(pos);
             const org = Mat4x4.translate(vec3(0, -height, 0).sub(&origin));
             try sprite.set(
