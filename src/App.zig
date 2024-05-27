@@ -75,7 +75,7 @@ text_pipeline: mach.EntityID,
 frame_encoder: *gpu.CommandEncoder = undefined,
 frame_render_pass: *gpu.RenderPassEncoder = undefined,
 atlas: loader.Atlas = undefined,
-scene: Scene = if (foxnne_debug) .game else .start,
+scene: Scene = .start,
 prev_scene: Scene = .none,
 
 fn deinit(
@@ -139,7 +139,7 @@ fn afterInit(
     text_pipeline.schedule(.update);
 
     // Load pixi atlas file
-    const atlas = try loader.Atlas.init(allocator, assets.spritesheet_atlas);
+    const atlas = try loader.Atlas.init(allocator, assets.sprites_atlas);
     std.debug.print("loaded sprite atlas: {} sprites, {} animations\n", .{ atlas.sprites.len, atlas.animations.len });
 
     const player = try entities.new();
@@ -520,8 +520,7 @@ fn tick(
             );
             app.state().player_position = pos;
 
-            const flipped: bool = (foxnne_debug and i % 2 == 0) or (!foxnne_debug and app.state().last_facing_direction.v[0] < 0);
-
+            const flipped: bool = app.state().last_facing_direction.v[0] < 0;
             const origin = vec3(
                 if (!flipped) @floatFromInt(sprite_info.origin[0]) else width - @as(f32, @floatFromInt(sprite_info.origin[0])),
                 -@as(f32, @floatFromInt(sprite_info.origin[1])),
@@ -541,30 +540,11 @@ fn tick(
             // If the player is moving left instead of right, then flip the sprite so it renders
             // facing the left instead of its natural right-facing direction.
             var uv_transform = Mat3x3.translate(vec2(x, y));
-            if ((foxnne_debug and i % 2 == 0) or (!foxnne_debug and flipped)) {
-                // Determine the max size of any sprite layer of our player
-                // const max_sprite_size: Vec2 = blk: {
-                //     var max = vec2(0, 0);
-                //     for (app.state().atlas.sprites[animation_info.start .. animation_info.start + animation_info.length]) |s_info| {
-                //         max.v[0] = @max(max.v[0], @as(f32, @floatFromInt(s_info.source[2])));
-                //         max.v[1] = @max(max.v[1], @as(f32, @floatFromInt(s_info.source[3])));
-                //     }
-                //     break :blk max;
-                // };
-                // _ = max_sprite_size; // autofix
-
+            if (flipped) {
                 const uv_flip_horizontally = Mat3x3.scale(vec2(-1, 1));
                 const uv_origin_shift = Mat3x3.translate(vec2(width, 0));
                 const uv_translate = Mat3x3.translate(vec2(x, y));
                 uv_transform = uv_origin_shift.mul(&uv_translate).mul(&uv_flip_horizontally);
-
-                // const origin_shift = origin.x() - width;
-                // const org_shift = Mat4x4.translate(vec3(origin_shift, origin.y() + height, 0));
-                // try sprite.set(
-                //     player,
-                //     .transform,
-                //     translate.mul(&scale).mul(&org_shift),
-                // );
             }
             try sprite.set(player, .uv_transform, uv_transform);
 
@@ -713,7 +693,7 @@ fn loadTexture(core: *mach.Core.Mod, allocator: std.mem.Allocator) !*gpu.Texture
     const queue = core.state().queue;
 
     // Load the image from memory
-    var img = try zigimg.Image.fromMemory(allocator, assets.spritesheet_png);
+    var img = try zigimg.Image.fromMemory(allocator, assets.sprites_png);
     defer img.deinit();
     const img_size = gpu.Extent3D{ .width = @as(u32, @intCast(img.width)), .height = @as(u32, @intCast(img.height)) };
 
