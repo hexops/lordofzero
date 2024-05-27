@@ -436,7 +436,7 @@ fn updateEffects(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mo
             const scale = Mat4x4.scaleScalar(world_scale);
             const translate = Mat4x4.translate(vec3(
                 position.v[0],
-                0,
+                position.v[1],
                 z_layer,
             ));
             z_layer += 1;
@@ -648,8 +648,8 @@ fn tick(
                 );
 
                 const position: Vec3 = vec3(
-                    if (app.state().last_facing_direction.v[0] > 0) pos.v[0] + 64.0 else pos.v[0] - 64.0,
-                    0,
+                    if (app.state().last_facing_direction.v[0] >= 0) pos.v[0] + 64.0 else pos.v[0] - 64.0,
+                    pos.v[1],
                     z_layer,
                 );
 
