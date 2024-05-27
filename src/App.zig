@@ -28,6 +28,7 @@ pub const systems = .{
     .end_frame = .{ .handler = endFrame },
     .audio_state_change = .{ .handler = audioStateChange },
     .update_scene = .{ .handler = updateScene },
+    .update_effects = .{ .handler = updateEffects },
 };
 
 pub const components = .{
@@ -38,6 +39,9 @@ pub const components = .{
     .is_logo = .{ .type = void },
     .pixi_sprite = .{ .type = loader.Sprite },
     .after_play_change_scene = .{ .type = Scene },
+    .effect_timer = .{ .type = mach.Timer },
+    .is_flipped = .{ .type = bool },
+    .position = .{ .type = Vec3 },
 };
 
 const Scene = enum {
@@ -48,7 +52,7 @@ const Scene = enum {
 
 const world_scale = 3.0;
 
-const foxnne_debug = true;
+const foxnne_debug = false;
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -370,6 +374,79 @@ fn updateScene(
     }
 }
 
+fn updateEffects(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mod) !void {
+
+    // Find effect entities with timer
+    var q = try entities.query(.{
+        .ids = mach.Entities.Mod.read(.id),
+        .timers = Mod.write(.effect_timer),
+        .flips = Mod.read(.is_flipped),
+        .positions = Mod.read(.position),
+    });
+
+    while (q.next()) |v| {
+        for (v.ids, v.timers, v.flips, v.positions) |id, *timer, flip, position| {
+            const attack_fx = id;
+            const effect_animation_name = "ground_attack_main";
+
+            const effect_animation_info: loader.Animation = blk: {
+                for (app.state().atlas.animations) |anim| {
+                    if (std.mem.eql(u8, anim.name, effect_animation_name)) break :blk anim;
+                }
+                @panic("cannot find animation");
+            };
+
+            // Determine the next player animation frame
+            const animation_fps: f32 = @floatFromInt(effect_animation_info.fps);
+            var i: usize = @intFromFloat(timer.read() * animation_fps);
+            if (i >= effect_animation_info.length) {
+                timer.reset();
+                i = 0;
+            }
+            const effect_sprite_info: loader.Sprite = app.state().atlas.sprites[effect_animation_info.start + i];
+
+            var z_layer: f32 = 0;
+
+            const effect_x: f32 = @floatFromInt(effect_sprite_info.source[0]);
+            const effect_y: f32 = @floatFromInt(effect_sprite_info.source[1]);
+            const effect_width: f32 = @floatFromInt(effect_sprite_info.source[2]);
+            const effect_height: f32 = @floatFromInt(effect_sprite_info.source[3]);
+
+            const origin_x = effect_sprite_info.origin[0];
+            const origin_y = effect_sprite_info.origin[1];
+            const origin = vec3(
+                if (!flip) @floatFromInt(origin_x) else effect_width - @as(f32, @floatFromInt(origin_x)),
+                -@as(f32, @floatFromInt(origin_y)),
+                0,
+            );
+
+            const scale = Mat4x4.scaleScalar(world_scale);
+            const translate = Mat4x4.translate(vec3(
+                position.v[0],
+                0,
+                z_layer,
+            ));
+            z_layer += 1;
+            const org = Mat4x4.translate(vec3(0, -effect_height, 0).sub(&origin));
+            try sprite.set(
+                attack_fx,
+                .transform,
+                translate.mul(&scale).mul(&org),
+            );
+
+            var uv_transform = Mat3x3.translate(vec2(effect_x, effect_y));
+            if (flip) {
+                const uv_flip_horizontally = Mat3x3.scale(vec2(-1, 1));
+                const uv_origin_shift = Mat3x3.translate(vec2(effect_width, 0));
+                const uv_translate = Mat3x3.translate(vec2(effect_x, effect_y));
+                uv_transform = uv_origin_shift.mul(&uv_translate).mul(&uv_flip_horizontally);
+            }
+            try sprite.set(attack_fx, .size, vec2(effect_width, effect_height));
+            try sprite.set(attack_fx, .uv_transform, uv_transform);
+        }
+    }
+}
+
 fn tick(
     core: *mach.Core.Mod,
     sprite: *gfx.Sprite.Mod,
@@ -469,6 +546,7 @@ fn tick(
         .game => {
             const can_attack = app.state().attack_cooldown_timer.read() > app.state().attack_cooldown;
             const begin_attack = !app.state().is_attacking and can_attack and app.state().player_wants_to_attack;
+
             if (begin_attack) {
                 app.state().attack_cooldown_timer.reset();
                 app.state().is_attacking = true;
@@ -493,13 +571,19 @@ fn tick(
                 @panic("cannot find animation");
             };
 
+            var end_attack: bool = false;
+
             // Determine the next player animation frame
             const animation_fps: f32 = @floatFromInt(animation_info.fps);
             var i: usize = @intFromFloat(app.state().player_anim_timer.read() * animation_fps);
             if (i >= animation_info.length) {
                 app.state().player_anim_timer.reset();
                 i = 0;
-                app.state().is_attacking = false;
+
+                if (app.state().is_attacking) {
+                    app.state().is_attacking = false;
+                    end_attack = true;
+                }
             }
             const sprite_info: loader.Sprite = app.state().atlas.sprites[animation_info.start + i];
 
@@ -520,7 +604,70 @@ fn tick(
             );
             app.state().player_position = pos;
 
-            const flipped: bool = app.state().last_facing_direction.v[0] < 0;
+            const flipped: bool = (foxnne_debug and i % 2 == 0) or (!foxnne_debug and app.state().last_facing_direction.v[0] < 0);
+
+            if (end_attack) {
+                const attack_fx = try entities.new();
+                const effect_animation_name = "ground_attack_main";
+
+                const effect_animation_info: loader.Animation = blk: {
+                    for (app.state().atlas.animations) |anim| {
+                        if (std.mem.eql(u8, anim.name, effect_animation_name)) break :blk anim;
+                    }
+                    @panic("cannot find animation");
+                };
+
+                const effect_sprite_info = app.state().atlas.sprites[effect_animation_info.start];
+
+                var z_layer: f32 = 0;
+
+                const effect_x: f32 = @floatFromInt(effect_sprite_info.source[0]);
+                const effect_y: f32 = @floatFromInt(effect_sprite_info.source[1]);
+                const effect_width: f32 = @floatFromInt(effect_sprite_info.source[2]);
+                const effect_height: f32 = @floatFromInt(effect_sprite_info.source[3]);
+
+                const origin_x = effect_sprite_info.origin[0];
+                const origin_y = effect_sprite_info.origin[1];
+                const origin = vec3(
+                    if (!flipped) @floatFromInt(origin_x) else effect_width - @as(f32, @floatFromInt(origin_x)),
+                    -@as(f32, @floatFromInt(origin_y)),
+                    0,
+                );
+
+                const position: Vec3 = vec3(
+                    if (app.state().last_facing_direction.v[0] > 0) pos.v[0] + 64.0 else pos.v[0] - 64.0,
+                    0,
+                    z_layer,
+                );
+
+                const scale = Mat4x4.scaleScalar(world_scale);
+                const translate = Mat4x4.translate(position);
+                z_layer += 1;
+                const org = Mat4x4.translate(vec3(0, -effect_height, 0).sub(&origin));
+                try sprite.set(
+                    attack_fx,
+                    .transform,
+                    translate.mul(&scale).mul(&org),
+                );
+
+                var uv_transform = Mat3x3.translate(vec2(effect_x, effect_y));
+                if (flipped) {
+                    const uv_flip_horizontally = Mat3x3.scale(vec2(-1, 1));
+                    const uv_origin_shift = Mat3x3.translate(vec2(effect_width, 0));
+                    const uv_translate = Mat3x3.translate(vec2(effect_x, effect_y));
+                    uv_transform = uv_origin_shift.mul(&uv_translate).mul(&uv_flip_horizontally);
+                }
+                try sprite.set(attack_fx, .uv_transform, uv_transform);
+
+                try sprite.set(attack_fx, .size, vec2(effect_width, effect_height));
+                try sprite.set(attack_fx, .uv_transform, uv_transform);
+                try sprite.set(attack_fx, .pipeline, app.state().pipeline);
+                try app.set(attack_fx, .is_game_scene, {});
+                try app.set(attack_fx, .effect_timer, try mach.Timer.start());
+                try app.set(attack_fx, .is_flipped, flipped);
+                try app.set(attack_fx, .position, position);
+            }
+
             const origin = vec3(
                 if (!flipped) @floatFromInt(sprite_info.origin[0]) else width - @as(f32, @floatFromInt(sprite_info.origin[0])),
                 -@as(f32, @floatFromInt(sprite_info.origin[1])),
