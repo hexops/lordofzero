@@ -80,7 +80,7 @@ text_pipeline: mach.EntityID,
 frame_encoder: *gpu.CommandEncoder = undefined,
 frame_render_pass: *gpu.RenderPassEncoder = undefined,
 atlas: loader.Atlas = undefined,
-scene: Scene = .game,
+scene: Scene = .start,
 prev_scene: Scene = .none,
 
 fn deinit(
@@ -545,10 +545,10 @@ fn tick(
                         0,
                     );
 
-                    const scale = Mat4x4.scaleScalar(world_scale);
+                    const scale = Mat4x4.scaleScalar(start_scale);
                     const translate = Mat4x4.translate(vec3(
-                        -(logo_sprite_width * world_scale) / 2.0,
-                        ((logo_sprite_height * world_scale) / 2.0) + (10 * math.sin((app.state().timer.read() / 8.0) * 2 * std.math.pi)),
+                        -(logo_sprite_width * start_scale) / 2.0,
+                        ((logo_sprite_height * start_scale) / 2.0) + (10 * math.sin((app.state().timer.read() / 8.0) * 2 * std.math.pi)),
                         transform.translation().z(),
                     ));
                     const org = Mat4x4.translate(vec3(0, -height, 0).sub(&origin));
