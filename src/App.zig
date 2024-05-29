@@ -6,7 +6,8 @@ const gfx = mach.gfx;
 const math = mach.math;
 const assets = @import("assets");
 
-const loader = @import("loader.zig");
+const pixi = @import("pixi.zig");
+const ldtk = @import("ldtk.zig");
 
 const vec2 = math.vec2;
 const vec3 = math.vec3;
@@ -37,7 +38,7 @@ pub const components = .{
     .is_start_scene = .{ .type = void },
     .is_game_scene = .{ .type = void },
     .is_logo = .{ .type = void },
-    .pixi_sprite = .{ .type = loader.Sprite },
+    .pixi_sprite = .{ .type = pixi.Sprite },
     .after_play_change_scene = .{ .type = Scene },
     .effect_timer = .{ .type = mach.Timer },
     .is_flipped = .{ .type = bool },
@@ -79,7 +80,8 @@ pipeline: mach.EntityID,
 text_pipeline: mach.EntityID,
 frame_encoder: *gpu.CommandEncoder = undefined,
 frame_render_pass: *gpu.RenderPassEncoder = undefined,
-atlas: loader.Atlas = undefined,
+parsed_atlas: pixi.ParsedFile,
+parsed_level: ldtk.ParsedFile,
 scene: Scene = .start,
 prev_scene: Scene = .none,
 
@@ -96,7 +98,8 @@ fn deinit(
     text.schedule(.deinit);
     text_pipeline.schedule(.deinit);
     core.schedule(.deinit);
-    app.state().atlas.deinit();
+    app.state().parsed_atlas.deinit();
+    app.state().parsed_level.deinit();
 }
 
 fn init(
@@ -144,8 +147,36 @@ fn afterInit(
     text_pipeline.schedule(.update);
 
     // Load pixi atlas file
-    const atlas = try loader.Atlas.init(allocator, assets.sprites_atlas);
-    std.debug.print("loaded sprite atlas: {} sprites, {} animations\n", .{ atlas.sprites.len, atlas.animations.len });
+    const parsed_atlas = try pixi.File.parseSlice(allocator, assets.sprites_atlas);
+    std.debug.print("loaded sprite atlas: {} sprites, {} animations\n", .{ parsed_atlas.value.sprites.len, parsed_atlas.value.animations.len });
+
+    // Load .ldtk level file
+    const parsed_level = try ldtk.File.parseSlice(allocator, assets.level_ldtk);
+    const level = blk: {
+        for (parsed_level.value.worlds[0].levels) |level| {
+            if (std.mem.eql(u8, level.identifier, "Level_0")) break :blk level;
+        }
+        @panic("could not find level");
+    };
+
+    std.debug.print("loaded level: {s} {}x{}px, layers: {}\n", .{ level.identifier, level.pxWid, level.pxHei, level.layerInstances.?.len });
+    for (level.layerInstances.?) |layer| {
+        std.debug.print(" layer: {s}, type={s}, visible={}, grid_size={}px, {}x{} (grid-based size)\n", .{
+            layer.__identifier,
+            @tagName(layer.__type),
+            layer.visible,
+            layer.__gridSize,
+            layer.__cWid,
+            layer.__cHei,
+        });
+        std.debug.print("        pxTotalOffset={},{}, entities={}, grid_tiles={}, tileset={?s}\n", .{
+            layer.__pxTotalOffsetX,
+            layer.__pxTotalOffsetY,
+            layer.entityInstances.len,
+            layer.gridTiles.len,
+            layer.__tilesetRelPath,
+        });
+    }
 
     const player = try entities.new();
     app.init(.{
@@ -162,7 +193,8 @@ fn afterInit(
         .allocator = allocator,
         .pipeline = pipeline,
         .text_pipeline = text_pipeline_id,
-        .atlas = atlas,
+        .parsed_atlas = parsed_atlas,
+        .parsed_level = parsed_level,
     });
 
     // Load the initial starting screen scene
@@ -287,7 +319,8 @@ fn updateScene(
 
             // Create the "Lord of Zero" logo sprite
             var z_layer: f32 = 0;
-            for (app.state().atlas.sprites) |sprite_info| {
+            const atlas = app.state().parsed_atlas.value;
+            for (atlas.sprites) |sprite_info| {
                 if (!std.mem.startsWith(u8, sprite_info.name, "logo_0_")) continue;
 
                 const x = sprite_info.source[0];
@@ -340,7 +373,8 @@ fn updateScene(
 
             // Create the "Wrench" player sprite
             var z_layer: f32 = 0;
-            for (app.state().atlas.sprites) |sprite_info| {
+            const atlas = app.state().parsed_atlas.value;
+            for (atlas.sprites) |sprite_info| {
                 if (!std.mem.startsWith(u8, sprite_info.name, "wrench_idle")) continue;
 
                 const x = sprite_info.source[0];
@@ -391,15 +425,16 @@ fn updateEffects(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mo
             const effect_animation_name = "ground_attack_main";
             const effect_dissolve_name = "ground_attack_dissolve_main";
 
-            const effect_animation_info: loader.Animation = blk: {
-                for (app.state().atlas.animations) |anim| {
+            const atlas = app.state().parsed_atlas.value;
+            const effect_animation_info: pixi.Animation = blk: {
+                for (atlas.animations) |anim| {
                     if (std.mem.eql(u8, anim.name, effect_animation_name)) break :blk anim;
                 }
                 @panic("cannot find animation");
             };
 
-            const dissolve_animation_info: loader.Animation = blk: {
-                for (app.state().atlas.animations) |anim| {
+            const dissolve_animation_info: pixi.Animation = blk: {
+                for (atlas.animations) |anim| {
                     if (std.mem.eql(u8, anim.name, effect_dissolve_name)) break :blk anim;
                 }
                 @panic("cannot find animation");
@@ -414,10 +449,10 @@ fn updateEffects(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mo
                 continue;
             }
 
-            const effect_sprite_info: loader.Sprite = if (i > effect_animation_info.length)
-                app.state().atlas.sprites[dissolve_animation_info.start + (i - effect_animation_info.length)]
+            const effect_sprite_info: pixi.Sprite = if (i > effect_animation_info.length)
+                atlas.sprites[dissolve_animation_info.start + (i - effect_animation_info.length)]
             else
-                app.state().atlas.sprites[effect_animation_info.start + i];
+                atlas.sprites[effect_animation_info.start + i];
 
             var z_layer: f32 = 0;
 
@@ -578,8 +613,9 @@ fn tick(
                 "wrench_walk_main";
 
             // Render the next animation frame for Wrench
-            const animation_info: loader.Animation = blk: {
-                for (app.state().atlas.animations) |anim| {
+            const atlas = app.state().parsed_atlas.value;
+            const animation_info: pixi.Animation = blk: {
+                for (atlas.animations) |anim| {
                     if (std.mem.eql(u8, anim.name, animation_name)) break :blk anim;
                 }
                 @panic("cannot find animation");
@@ -599,7 +635,7 @@ fn tick(
                     end_attack = true;
                 }
             }
-            const sprite_info: loader.Sprite = app.state().atlas.sprites[animation_info.start + i];
+            const sprite_info: pixi.Sprite = atlas.sprites[animation_info.start + i];
 
             const player = app.state().player;
             const x: f32 = @floatFromInt(sprite_info.source[0]);
@@ -624,14 +660,14 @@ fn tick(
                 const attack_fx = try entities.new();
                 const effect_animation_name = "ground_attack_main";
 
-                const effect_animation_info: loader.Animation = blk: {
-                    for (app.state().atlas.animations) |anim| {
+                const effect_animation_info: pixi.Animation = blk: {
+                    for (atlas.animations) |anim| {
                         if (std.mem.eql(u8, anim.name, effect_animation_name)) break :blk anim;
                     }
                     @panic("cannot find animation");
                 };
 
-                const effect_sprite_info = app.state().atlas.sprites[effect_animation_info.start];
+                const effect_sprite_info = atlas.sprites[effect_animation_info.start];
 
                 var z_layer: f32 = 0;
 
@@ -792,7 +828,7 @@ fn tick(
     // Begin render pass
     const dark_gray = gpu.Color{ .r = 0.106, .g = 0.11, .b = 0.118, .a = 1 };
     const sky_blue = gpu.Color{ .r = 0.776, .g = 0.988, .b = 1, .a = 1 };
-    _ = sky_blue; // autofix
+    _ = sky_blue;
     const color_attachments = [_]gpu.RenderPassColorAttachment{.{
         .view = back_buffer_view,
         .clear_value = switch (app.state().scene) {
