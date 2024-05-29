@@ -12,6 +12,8 @@ pub const sfx = struct {
     pub const morning_bells = @embedFile("sfx/morning_bells.opus");
 };
 
+pub const level_ldtk = @embedFile("level.ldtk");
+
 pub const sprites_h_png = @embedFile("sprites_h.png");
 pub const sprites_atlas = @embedFile("sprites.atlas");
 pub const sprites_png = @embedFile("sprites.png");
