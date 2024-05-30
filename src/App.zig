@@ -84,7 +84,7 @@ frame_render_pass: *gpu.RenderPassEncoder = undefined,
 parsed_atlas: pixi.ParsedFile,
 parsed_tileset_atlas: pixi.ParsedFile,
 parsed_level: ldtk.ParsedFile,
-scene: Scene = .start,
+scene: Scene = .game,
 prev_scene: Scene = .none,
 
 fn deinit(
@@ -359,20 +359,14 @@ fn updateScene(
                     for (layer.entityInstances) |layer_entity| {
                         for (layer_entity.__tags) |tag| {
                             if (!std.mem.eql(u8, tag, "player_start")) continue;
-                            const level_height: f32 = @floatFromInt(level.pxHei);
-                            const entity_pos_x: f32 = @floatFromInt(layer_entity.__worldX.?);
-                            const entity_pos_y: f32 = @floatFromInt(layer_entity.__worldY.?);
-                            const entity_height: f32 = @floatFromInt(layer_entity.height);
 
-                            // TODO: debugging line:
-                            // std.debug.print("level_height={d:.02}; entity_pos_y={d:.02}; entity_height={d:.02}\n", .{ level_height, entity_pos_y, entity_height });
+                            // TODO: account for optional layer offsets, if they exist
+                            const entity_pos_x: f32 = @floatFromInt(layer_entity.px[0]);
+                            const entity_pos_y: f32 = @floatFromInt(layer_entity.px[1]);
+                            const entity_height: f32 = @floatFromInt(layer_entity.height);
                             break :blk vec3(
                                 entity_pos_x * world_scale,
-
-                                // TODO: something is very wrong here or with our origin calculation
-                                // in SpriteCalc.init :)
-                                -(level_height + entity_pos_y + entity_height),
-
+                                -((entity_pos_y * world_scale) + entity_height),
                                 0, // z layer of player
                             );
                         }
