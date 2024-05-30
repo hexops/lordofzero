@@ -366,7 +366,7 @@ fn updateScene(
                             const entity_height: f32 = @floatFromInt(layer_entity.height);
                             break :blk vec3(
                                 entity_pos_x * world_scale,
-                                -((entity_pos_y * world_scale) + entity_height),
+                                -((entity_pos_y) + entity_height) * world_scale,
                                 0, // z layer of player
                             );
                         }
