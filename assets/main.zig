@@ -18,7 +18,6 @@ pub const sprites_h_png = @embedFile("sprites_h.png");
 pub const sprites_atlas = @embedFile("sprites.atlas");
 pub const sprites_png = @embedFile("sprites.png");
 
-// Note: the application itself doesn't use the tileset, LDTK does.
-// pub const tileset_h_png = @embedFile("tileset_h.png");
-// pub const tileset_atlas = @embedFile("tileset.atlas");
-// pub const tileset_png = @embedFile("tileset.png");
+pub const tileset_h_png = @embedFile("tileset_h.png");
+pub const tileset_atlas = @embedFile("tileset.atlas");
+pub const tileset_png = @embedFile("tileset.png");

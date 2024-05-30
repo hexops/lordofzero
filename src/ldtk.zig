@@ -142,7 +142,7 @@ pub const EntityInstance = struct {
     px: [2]i64,
 
     /// An array of all custom fields and their values.
-    fieldInstance: []FieldInstance,
+    fieldInstances: []FieldInstance,
 
     /// Entity width in pixels. For non-resizable entities, it will be the same as Entity definition.
     width: i64,
@@ -167,10 +167,10 @@ pub const EntityInstance = struct {
     __smartColor: []const u8,
 
     /// Grid-based coordinates (`[x,y]` format)
-    __grid: [][2]i64,
+    __grid: [2]i64,
 
     /// Pivot coordinates  (`[x,y]` format, values are from 0 to 1) of the Entity
-    __pivot: [][2]i64,
+    __pivot: [2]i64,
 
     /// Array of tags defined in this Entity definition
     __tags: [][]const u8,

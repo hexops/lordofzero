@@ -38,6 +38,7 @@ pub const components = .{
     .is_start_scene = .{ .type = void },
     .is_game_scene = .{ .type = void },
     .is_logo = .{ .type = void },
+    .is_tile = .{ .type = void },
     .pixi_sprite = .{ .type = pixi.Sprite },
     .after_play_change_scene = .{ .type = Scene },
     .effect_timer = .{ .type = mach.Timer },
@@ -54,14 +55,13 @@ const Scene = enum {
 const start_scale = 3.0;
 const world_scale = 2.0;
 
-const foxnne_debug = false;
-
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
 player: mach.EntityID,
 direction: Vec2 = vec2(0, 0),
 last_facing_direction: Vec2 = vec2(0, 0),
 player_position: Vec3 = vec3(0, 0, 0), // z == player layer
+camera_position: Vec3 = vec3(0, 0, 0),
 player_wants_to_attack: bool = false,
 attack_cooldown: f32 = 1.0,
 attack_cooldown_timer: mach.Timer,
@@ -77,10 +77,12 @@ rand: std.rand.DefaultPrng,
 time: f32,
 allocator: std.mem.Allocator,
 pipeline: mach.EntityID,
+tileset_pipeline: mach.EntityID,
 text_pipeline: mach.EntityID,
 frame_encoder: *gpu.CommandEncoder = undefined,
 frame_render_pass: *gpu.RenderPassEncoder = undefined,
 parsed_atlas: pixi.ParsedFile,
+parsed_tileset_atlas: pixi.ParsedFile,
 parsed_level: ldtk.ParsedFile,
 scene: Scene = .start,
 prev_scene: Scene = .none,
@@ -99,6 +101,7 @@ fn deinit(
     text_pipeline.schedule(.deinit);
     core.schedule(.deinit);
     app.state().parsed_atlas.deinit();
+    app.state().parsed_tileset_atlas.deinit();
     app.state().parsed_level.deinit();
 }
 
@@ -135,10 +138,15 @@ fn afterInit(
     // finishes playing.
     audio.state().on_state_change = app.system(.audio_state_change);
 
-    // Create a sprite rendering pipeline
+    // Create a sprite rendering pipelines
     const allocator = gpa.allocator();
+
     const pipeline = try entities.new();
-    try sprite_pipeline.set(pipeline, .texture, try loadTexture(core, allocator));
+    try sprite_pipeline.set(pipeline, .texture, try loadTexture(core, allocator, assets.sprites_png));
+
+    const tileset_pipeline = try entities.new();
+    try sprite_pipeline.set(tileset_pipeline, .texture, try loadTexture(core, allocator, assets.tileset_png));
+
     sprite_pipeline.schedule(.update);
 
     // Create a text rendering pipeline
@@ -148,35 +156,11 @@ fn afterInit(
 
     // Load pixi atlas file
     const parsed_atlas = try pixi.File.parseSlice(allocator, assets.sprites_atlas);
+    const parsed_tileset_atlas = try pixi.File.parseSlice(allocator, assets.tileset_atlas);
     std.debug.print("loaded sprite atlas: {} sprites, {} animations\n", .{ parsed_atlas.value.sprites.len, parsed_atlas.value.animations.len });
 
-    // Load .ldtk level file
+    // Preload .ldtk level file
     const parsed_level = try ldtk.File.parseSlice(allocator, assets.level_ldtk);
-    const level = blk: {
-        for (parsed_level.value.worlds[0].levels) |level| {
-            if (std.mem.eql(u8, level.identifier, "Level_0")) break :blk level;
-        }
-        @panic("could not find level");
-    };
-
-    std.debug.print("loaded level: {s} {}x{}px, layers: {}\n", .{ level.identifier, level.pxWid, level.pxHei, level.layerInstances.?.len });
-    for (level.layerInstances.?) |layer| {
-        std.debug.print(" layer: {s}, type={s}, visible={}, grid_size={}px, {}x{} (grid-based size)\n", .{
-            layer.__identifier,
-            @tagName(layer.__type),
-            layer.visible,
-            layer.__gridSize,
-            layer.__cWid,
-            layer.__cHei,
-        });
-        std.debug.print("        pxTotalOffset={},{}, entities={}, grid_tiles={}, tileset={?s}\n", .{
-            layer.__pxTotalOffsetX,
-            layer.__pxTotalOffsetY,
-            layer.entityInstances.len,
-            layer.gridTiles.len,
-            layer.__tilesetRelPath,
-        });
-    }
 
     const player = try entities.new();
     app.init(.{
@@ -192,8 +176,10 @@ fn afterInit(
         .time = 0,
         .allocator = allocator,
         .pipeline = pipeline,
+        .tileset_pipeline = tileset_pipeline,
         .text_pipeline = text_pipeline_id,
         .parsed_atlas = parsed_atlas,
+        .parsed_tileset_atlas = parsed_tileset_atlas,
         .parsed_level = parsed_level,
     });
 
@@ -323,37 +309,25 @@ fn updateScene(
             for (atlas.sprites) |sprite_info| {
                 if (!std.mem.startsWith(u8, sprite_info.name, "logo_0_")) continue;
 
-                const x = sprite_info.source[0];
-                const y = sprite_info.source[1];
-                const width = sprite_info.source[2];
-                const height = sprite_info.source[3];
-                const origin = vec3(
-                    @floatFromInt(sprite_info.origin[0]),
-                    -@as(f32, @floatFromInt(sprite_info.origin[1])),
-                    0,
-                );
-
-                const id = try entities.new();
-                const scale = Mat4x4.scaleScalar(start_scale);
-                const translate = Mat4x4.translate(vec3(
+                const logo_sprite = try entities.new();
+                const position = vec3(
                     -220,
                     140,
                     z_layer,
-                ));
+                );
                 z_layer += 1;
 
-                const org = Mat4x4.translate(vec3(0, -@as(f32, @floatFromInt(height)), 0).sub(&origin));
-                try sprite.set(
-                    id,
-                    .transform,
-                    translate.mul(&scale).mul(&org),
-                );
-                try sprite.set(id, .size, vec2(@floatFromInt(width), @floatFromInt(height)));
-                try sprite.set(id, .uv_transform, Mat3x3.translate(vec2(@floatFromInt(x), @floatFromInt(y))));
-                try sprite.set(id, .pipeline, app.state().pipeline);
-                try app.set(id, .pixi_sprite, sprite_info);
-                try app.set(id, .is_start_scene, {}); // This entity belongs to the start scene
-                try app.set(id, .is_logo, {}); // This entity belongs to the start scene
+                try SpriteCalc.apply(sprite, logo_sprite, .{
+                    .sprite_info = sprite_info,
+                    .pos = position,
+                    .scale = Vec3.splat(start_scale),
+                    .flipped = false,
+                });
+
+                try sprite.set(logo_sprite, .pipeline, app.state().pipeline);
+                try app.set(logo_sprite, .pixi_sprite, sprite_info);
+                try app.set(logo_sprite, .is_start_scene, {}); // This entity belongs to the start scene
+                try app.set(logo_sprite, .is_logo, {}); // This entity belongs to the start scene
             }
         },
         .game => {
@@ -371,47 +345,170 @@ fn updateScene(
             try app.set(bgm_entity, .is_game_scene, {}); // This entity belongs to the start scene
             try app.set(bgm_entity, .is_bgm, {}); // Mark our audio entity is bgm, so we can distinguish it from sfx later.
 
+            // Find the LDTK level "Level_0"
+            const level = blk: {
+                for (app.state().parsed_level.value.worlds[0].levels) |level| {
+                    if (std.mem.eql(u8, level.identifier, "Level_0")) break :blk level;
+                }
+                @panic("could not find level");
+            };
+
             // Create the "Wrench" player sprite
-            var z_layer: f32 = 0;
+            app.state().player_position = blk: {
+                for (level.layerInstances.?) |layer| {
+                    for (layer.entityInstances) |layer_entity| {
+                        for (layer_entity.__tags) |tag| {
+                            if (!std.mem.eql(u8, tag, "player_start")) continue;
+                            const level_height: f32 = @floatFromInt(level.pxHei);
+                            const entity_pos_x: f32 = @floatFromInt(layer_entity.__worldX.?);
+                            const entity_pos_y: f32 = @floatFromInt(layer_entity.__worldY.?);
+                            const entity_height: f32 = @floatFromInt(layer_entity.height);
+
+                            // TODO: debugging line:
+                            // std.debug.print("level_height={d:.02}; entity_pos_y={d:.02}; entity_height={d:.02}\n", .{ level_height, entity_pos_y, entity_height });
+                            break :blk vec3(
+                                entity_pos_x * world_scale,
+
+                                // TODO: something is very wrong here or with our origin calculation
+                                // in SpriteCalc.init :)
+                                -(level_height + entity_pos_y + entity_height),
+
+                                0, // z layer of player
+                            );
+                        }
+                    }
+                }
+                @panic("could not find entity in level tagged 'player_start'");
+            };
+
             const atlas = app.state().parsed_atlas.value;
             for (atlas.sprites) |sprite_info| {
                 if (!std.mem.startsWith(u8, sprite_info.name, "wrench_idle")) continue;
 
-                const x = sprite_info.source[0];
-                const y = sprite_info.source[1];
-                const width = sprite_info.source[2];
-                const height = sprite_info.source[3];
-
-                const origin_x = sprite_info.origin[0];
-                const origin_y = sprite_info.origin[1];
-                const origin = vec3(@floatFromInt(origin_x), -@as(f32, @floatFromInt(origin_y)), 0);
-
-                const scale = Mat4x4.scaleScalar(world_scale);
-                const translate = Mat4x4.translate(vec3(
-                    0,
-                    0,
-                    z_layer,
-                ));
-                z_layer += 1;
-                const org = Mat4x4.translate(vec3(0, -@as(f32, @floatFromInt(height)), 0).sub(&origin));
-                try sprite.set(
-                    app.state().player,
-                    .transform,
-                    translate.mul(&scale).mul(&org),
-                );
-                try sprite.set(app.state().player, .size, vec2(@floatFromInt(width), @floatFromInt(height)));
-                try sprite.set(app.state().player, .uv_transform, Mat3x3.translate(vec2(@floatFromInt(x), @floatFromInt(y))));
+                try SpriteCalc.apply(sprite, app.state().player, .{
+                    .sprite_info = sprite_info,
+                    .pos = app.state().player_position,
+                    .scale = Vec3.splat(world_scale),
+                    .flipped = false,
+                });
                 try sprite.set(app.state().player, .pipeline, app.state().pipeline);
                 try app.set(app.state().player, .is_game_scene, {});
                 break;
+            }
+
+            // Our atlas is all of our sprites, tightly packed for optimal rendering performance.
+            //
+            // The tileset atlas is the same exact thing (all our sprites), but not tightly packed
+            // so that LDTK can understand / work with them. Anytime LDTK gives us a location in our
+            // tileset, we just find the name of that sprite and then render the tightly packed
+            // version instead.
+            const tileset_atlas = app.state().parsed_tileset_atlas.value;
+
+            std.debug.print("loading level: {s} {}x{}px, layers: {}\n", .{ level.identifier, level.pxWid, level.pxHei, level.layerInstances.?.len });
+            var z_layer: f32 = 0.0;
+            for (level.layerInstances.?) |layer| {
+                std.debug.print(" layer: {s}, type={s}, visible={}, grid_size={}px, {}x{} (grid-based size)\n", .{
+                    layer.__identifier,
+                    @tagName(layer.__type),
+                    layer.visible,
+                    layer.__gridSize,
+                    layer.__cWid,
+                    layer.__cHei,
+                });
+                std.debug.print("        pxTotalOffset={},{}, entities={}, grid_tiles={}, tileset={?s}\n", .{
+                    layer.__pxTotalOffsetX,
+                    layer.__pxTotalOffsetY,
+                    layer.entityInstances.len,
+                    layer.gridTiles.len,
+                    layer.__tilesetRelPath,
+                });
+
+                building_tiles: for (layer.gridTiles) |tile| {
+                    // Find the pixi sprite corresponding to this tile
+                    for (tileset_atlas.sprites) |sprite_info| {
+                        if (tile.src[0] != sprite_info.source[0] or tile.src[1] != sprite_info.source[1]) continue;
+
+                        const tile_sprite = try entities.new();
+                        const pos = vec3(
+                            @as(f32, @floatFromInt(tile.px[0])) * world_scale,
+                            -@as(f32, @floatFromInt(tile.px[1])) * world_scale,
+                            z_layer,
+                        );
+
+                        try SpriteCalc.apply(sprite, tile_sprite, .{
+                            .sprite_info = sprite_info,
+                            .pos = pos,
+                            .scale = Vec3.splat(world_scale),
+                            .flipped = false,
+                        });
+                        try sprite.set(tile_sprite, .pipeline, app.state().tileset_pipeline);
+                        try app.set(tile_sprite, .pixi_sprite, sprite_info);
+                        try app.set(tile_sprite, .is_game_scene, {});
+                        try app.set(tile_sprite, .is_tile, {}); // This entity belongs to the start scene
+
+                        continue :building_tiles;
+                    }
+                    std.debug.panic("failed to find sprite for tile: {}\n", .{tile});
+                }
+                z_layer += 1;
             }
         },
     }
 }
 
-fn updateEffects(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mod) !void {
+const SpriteCalc = struct {
+    transform: Mat4x4,
+    uv_transform: Mat3x3,
+    size: Vec2,
 
-    // Find effect entities with timer
+    pub const Input = struct {
+        sprite_info: pixi.Sprite,
+        pos: Vec3,
+        scale: Vec3,
+        flipped: bool,
+    };
+
+    fn init(in: Input) SpriteCalc {
+        const x: f32 = @floatFromInt(in.sprite_info.source[0]);
+        const y: f32 = @floatFromInt(in.sprite_info.source[1]);
+        const width: f32 = @floatFromInt(in.sprite_info.source[2]);
+        const height: f32 = @floatFromInt(in.sprite_info.source[3]);
+        const origin_x: f32 = @floatFromInt(in.sprite_info.origin[0]);
+        const origin_y: f32 = @floatFromInt(in.sprite_info.origin[1]);
+
+        const origin = Mat4x4.translate(vec3(
+            if (!in.flipped) -origin_x else -width + origin_x,
+            -height + origin_y,
+            0,
+        ));
+        const scale = Mat4x4.scale(in.scale);
+        const translate = Mat4x4.translate(in.pos);
+
+        var uv_transform = Mat3x3.translate(vec2(x, y));
+        if (in.flipped) {
+            const uv_flip_horizontally = Mat3x3.scale(vec2(-1, 1));
+            const uv_origin_shift = Mat3x3.translate(vec2(width, 0));
+            const uv_translate = Mat3x3.translate(vec2(x, y));
+            uv_transform = uv_origin_shift.mul(&uv_translate).mul(&uv_flip_horizontally);
+        }
+
+        return .{
+            .transform = translate.mul(&scale).mul(&origin),
+            .uv_transform = uv_transform,
+            .size = vec2(width, height),
+        };
+    }
+
+    fn apply(sprite: *gfx.Sprite.Mod, entity: mach.EntityID, in: Input) !void {
+        const calc = SpriteCalc.init(in);
+        try sprite.set(entity, .transform, calc.transform);
+        try sprite.set(entity, .uv_transform, calc.uv_transform);
+        try sprite.set(entity, .size, calc.size);
+    }
+};
+
+fn updateEffects(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mod) !void {
+    // Find effect entities with timers
     var q = try entities.query(.{
         .ids = mach.Entities.Mod.read(.id),
         .timers = Mod.write(.effect_timer),
@@ -454,44 +551,12 @@ fn updateEffects(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mo
             else
                 atlas.sprites[effect_animation_info.start + i];
 
-            var z_layer: f32 = 0;
-
-            const effect_x: f32 = @floatFromInt(effect_sprite_info.source[0]);
-            const effect_y: f32 = @floatFromInt(effect_sprite_info.source[1]);
-            const effect_width: f32 = @floatFromInt(effect_sprite_info.source[2]);
-            const effect_height: f32 = @floatFromInt(effect_sprite_info.source[3]);
-
-            const origin_x = effect_sprite_info.origin[0];
-            const origin_y = effect_sprite_info.origin[1];
-            const origin = vec3(
-                if (!flip) @floatFromInt(origin_x) else effect_width - @as(f32, @floatFromInt(origin_x)),
-                -@as(f32, @floatFromInt(origin_y)),
-                0,
-            );
-
-            const scale = Mat4x4.scaleScalar(world_scale);
-            const translate = Mat4x4.translate(vec3(
-                position.v[0],
-                position.v[1],
-                z_layer,
-            ));
-            z_layer += 1;
-            const org = Mat4x4.translate(vec3(0, -effect_height, 0).sub(&origin));
-            try sprite.set(
-                attack_fx,
-                .transform,
-                translate.mul(&scale).mul(&org),
-            );
-
-            var uv_transform = Mat3x3.translate(vec2(effect_x, effect_y));
-            if (flip) {
-                const uv_flip_horizontally = Mat3x3.scale(vec2(-1, 1));
-                const uv_origin_shift = Mat3x3.translate(vec2(effect_width, 0));
-                const uv_translate = Mat3x3.translate(vec2(effect_x, effect_y));
-                uv_transform = uv_origin_shift.mul(&uv_translate).mul(&uv_flip_horizontally);
-            }
-            try sprite.set(attack_fx, .size, vec2(effect_width, effect_height));
-            try sprite.set(attack_fx, .uv_transform, uv_transform);
+            try SpriteCalc.apply(sprite, attack_fx, .{
+                .sprite_info = effect_sprite_info,
+                .pos = position,
+                .scale = Vec3.splat(world_scale),
+                .flipped = flip,
+            });
         }
     }
 }
@@ -571,24 +636,18 @@ fn tick(
             });
             while (q.next()) |v| {
                 for (v.transforms, v.sprite_infos) |*transform, sprite_info| {
-                    const logo_sprite_width = 256;
-                    const logo_sprite_height = 160;
-                    const height: f32 = @floatFromInt(sprite_info.source[3]);
-                    const origin = vec3(
-                        @floatFromInt(sprite_info.origin[0]),
-                        -@as(f32, @floatFromInt(sprite_info.origin[1])),
+                    const pos = vec3(
                         0,
-                    );
-
-                    const scale = Mat4x4.scaleScalar(start_scale);
-                    const translate = Mat4x4.translate(vec3(
-                        -(logo_sprite_width * start_scale) / 2.0,
-                        ((logo_sprite_height * start_scale) / 2.0) + (10 * math.sin((app.state().timer.read() / 8.0) * 2 * std.math.pi)),
+                        (10 * math.sin((app.state().timer.read() / 8.0) * 2 * std.math.pi)),
                         transform.translation().z(),
-                    ));
-                    const org = Mat4x4.translate(vec3(0, -height, 0).sub(&origin));
-
-                    transform.* = translate.mul(&scale).mul(&org);
+                    );
+                    const calc = SpriteCalc.init(.{
+                        .sprite_info = sprite_info,
+                        .pos = pos,
+                        .scale = Vec3.splat(start_scale),
+                        .flipped = false,
+                    });
+                    transform.* = calc.transform;
                 }
             }
         },
@@ -635,13 +694,6 @@ fn tick(
                     end_attack = true;
                 }
             }
-            const sprite_info: pixi.Sprite = atlas.sprites[animation_info.start + i];
-
-            const player = app.state().player;
-            const x: f32 = @floatFromInt(sprite_info.source[0]);
-            const y: f32 = @floatFromInt(sprite_info.source[1]);
-            const width: f32 = @floatFromInt(sprite_info.source[2]);
-            const height: f32 = @floatFromInt(sprite_info.source[3]);
 
             // Player moves in the direction of the keyboard input
             const dir = if (app.state().is_attacking) app.state().direction.mulScalar(0.5) else app.state().direction;
@@ -650,11 +702,20 @@ fn tick(
             }
             const speed = 250.0;
             const pos = app.state().player_position.add(
-                &vec3(dir.v[0], dir.v[1], 0).mulScalar(speed).mulScalar(delta_time),
+                &vec3(dir.v[0], 0, 0).mulScalar(speed).mulScalar(delta_time),
             );
             app.state().player_position = pos;
 
-            const flipped: bool = (foxnne_debug and i % 2 == 0) or (!foxnne_debug and app.state().last_facing_direction.v[0] < 0);
+            // If the player is moving left instead of right, then flip the sprite so it renders
+            // facing the left instead of its natural right-facing direction.
+            const flipped: bool = app.state().last_facing_direction.v[0] < 0;
+            const player = app.state().player;
+            try SpriteCalc.apply(sprite, player, .{
+                .sprite_info = atlas.sprites[animation_info.start + i],
+                .pos = pos,
+                .scale = Vec3.splat(world_scale),
+                .flipped = flipped,
+            });
 
             if (end_attack) {
                 const attack_fx = try entities.new();
@@ -667,82 +728,25 @@ fn tick(
                     @panic("cannot find animation");
                 };
 
-                const effect_sprite_info = atlas.sprites[effect_animation_info.start];
-
-                var z_layer: f32 = 0;
-
-                const effect_x: f32 = @floatFromInt(effect_sprite_info.source[0]);
-                const effect_y: f32 = @floatFromInt(effect_sprite_info.source[1]);
-                const effect_width: f32 = @floatFromInt(effect_sprite_info.source[2]);
-                const effect_height: f32 = @floatFromInt(effect_sprite_info.source[3]);
-
-                const origin_x = effect_sprite_info.origin[0];
-                const origin_y = effect_sprite_info.origin[1];
-                const origin = vec3(
-                    if (!flipped) @floatFromInt(origin_x) else effect_width - @as(f32, @floatFromInt(origin_x)),
-                    -@as(f32, @floatFromInt(origin_y)),
-                    0,
-                );
-
+                const z_layer: f32 = 0;
                 const position: Vec3 = vec3(
                     if (app.state().last_facing_direction.v[0] >= 0) pos.v[0] + 64.0 else pos.v[0] - 64.0,
                     pos.v[1],
                     z_layer,
                 );
 
-                const scale = Mat4x4.scaleScalar(world_scale);
-                const translate = Mat4x4.translate(position);
-                z_layer += 1;
-                const org = Mat4x4.translate(vec3(0, -effect_height, 0).sub(&origin));
-                try sprite.set(
-                    attack_fx,
-                    .transform,
-                    translate.mul(&scale).mul(&org),
-                );
-
-                var uv_transform = Mat3x3.translate(vec2(effect_x, effect_y));
-                if (flipped) {
-                    const uv_flip_horizontally = Mat3x3.scale(vec2(-1, 1));
-                    const uv_origin_shift = Mat3x3.translate(vec2(effect_width, 0));
-                    const uv_translate = Mat3x3.translate(vec2(effect_x, effect_y));
-                    uv_transform = uv_origin_shift.mul(&uv_translate).mul(&uv_flip_horizontally);
-                }
-
-                try sprite.set(attack_fx, .size, vec2(effect_width, effect_height));
-                try sprite.set(attack_fx, .uv_transform, uv_transform);
+                try SpriteCalc.apply(sprite, attack_fx, .{
+                    .sprite_info = atlas.sprites[effect_animation_info.start],
+                    .pos = position,
+                    .scale = Vec3.splat(world_scale),
+                    .flipped = flipped,
+                });
                 try sprite.set(attack_fx, .pipeline, app.state().pipeline);
                 try app.set(attack_fx, .is_game_scene, {});
                 try app.set(attack_fx, .effect_timer, try mach.Timer.start());
                 try app.set(attack_fx, .is_flipped, flipped);
                 try app.set(attack_fx, .position, position);
             }
-
-            const origin = vec3(
-                if (!flipped) @floatFromInt(sprite_info.origin[0]) else width - @as(f32, @floatFromInt(sprite_info.origin[0])),
-                -@as(f32, @floatFromInt(sprite_info.origin[1])),
-                0,
-            );
-
-            const scale = Mat4x4.scaleScalar(world_scale);
-            const translate = Mat4x4.translate(pos);
-            const org = Mat4x4.translate(vec3(0, -height, 0).sub(&origin));
-            try sprite.set(
-                player,
-                .transform,
-                translate.mul(&scale).mul(&org),
-            );
-            try sprite.set(player, .size, vec2(width, height));
-
-            // If the player is moving left instead of right, then flip the sprite so it renders
-            // facing the left instead of its natural right-facing direction.
-            var uv_transform = Mat3x3.translate(vec2(x, y));
-            if (flipped) {
-                const uv_flip_horizontally = Mat3x3.scale(vec2(-1, 1));
-                const uv_origin_shift = Mat3x3.translate(vec2(width, 0));
-                const uv_translate = Mat3x3.translate(vec2(x, y));
-                uv_transform = uv_origin_shift.mul(&uv_translate).mul(&uv_flip_horizontally);
-            }
-            try sprite.set(player, .uv_transform, uv_transform);
 
             if (i != app.state().player_anim_frame) {
                 // Player animation frame has changed
@@ -807,8 +811,21 @@ fn tick(
         .near = -0.1,
         .far = 100000,
     });
-    const view_projection = projection.mul(&Mat4x4.translate(vec3(0, 0, 0)));
+
+    // Smooth camera following
+    const camera_target = switch (app.state().scene) {
+        .none => vec3(0, 0, 0),
+        .start => vec3(0, 0, 0),
+        .game => vec3(app.state().player_position.x(), app.state().player_position.y() + (height_px / 4), 0),
+    };
+    const camera_target_diff = camera_target.sub(&app.state().camera_position);
+    const camera_lag_seconds = 0.5;
+    app.state().camera_position = app.state().camera_position.add(&camera_target_diff.mulScalar(delta_time / camera_lag_seconds));
+
+    const view = Mat4x4.translate(app.state().camera_position.mulScalar(-1));
+    const view_projection = projection.mul(&view);
     try sprite_pipeline.set(app.state().pipeline, .view_projection, view_projection);
+    try sprite_pipeline.set(app.state().tileset_pipeline, .view_projection, view_projection);
     try text_pipeline.set(app.state().pipeline, .view_projection, view_projection);
 
     // Perform pre-render work
@@ -886,12 +903,12 @@ fn endFrame(app: *Mod, core: *mach.Core.Mod) !void {
     app.state().frame_count += 1;
 }
 
-fn loadTexture(core: *mach.Core.Mod, allocator: std.mem.Allocator) !*gpu.Texture {
+fn loadTexture(core: *mach.Core.Mod, allocator: std.mem.Allocator, png_bytes: []const u8) !*gpu.Texture {
     const device = core.state().device;
     const queue = core.state().queue;
 
     // Load the image from memory
-    var img = try zigimg.Image.fromMemory(allocator, assets.sprites_png);
+    var img = try zigimg.Image.fromMemory(allocator, png_bytes);
     defer img.deinit();
     const img_size = gpu.Extent3D{ .width = @as(u32, @intCast(img.width)), .height = @as(u32, @intCast(img.height)) };
 
