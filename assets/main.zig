@@ -18,4 +18,4 @@ pub const lordofzero_h_png = @embedFile("lordofzero_h.png");
 pub const lordofzero_atlas = @embedFile("lordofzero.atlas");
 pub const lordofzero_png = @embedFile("lordofzero.png");
 
-pub const pixi_ldtk_json = @embedFile("src/pixi-ldtk.json");
+pub const pixi_ldtk_json = @embedFile("pixi-ldtk.json");

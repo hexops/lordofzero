@@ -370,9 +370,8 @@ fn updateScene(
                 @panic("could not find entity in level tagged 'player_start'");
             };
 
-            const atlas = app.state().parsed_atlas.value;
+            const atlas: pixi.Atlas = app.state().parsed_atlas.value;
             const pixi_ldtk: pixi.LDTKCompatibility = app.state().parsed_ldtk_compatibility.value;
-            _ = pixi_ldtk; // autofix
 
             for (atlas.sprites) |sprite_info| {
                 if (!std.mem.startsWith(u8, sprite_info.name, "wrench_idle")) continue;
@@ -409,29 +408,33 @@ fn updateScene(
 
                 building_tiles: for (layer.gridTiles) |tile| {
                     // Find the pixi sprite corresponding to this tile
-                    for (atlas.sprites) |sprite_info| {
-                        if (tile.src[0] != sprite_info.source[0] or tile.src[1] != sprite_info.source[1]) continue;
 
-                        const tile_sprite = try entities.new();
-                        const pos = vec3(
-                            @as(f32, @floatFromInt(tile.px[0])) * world_scale,
-                            -@as(f32, @floatFromInt(tile.px[1])) * world_scale,
-                            z_layer,
-                        );
+                    if (pixi_ldtk.findSpriteByLayerSrc(layer.__tilesetRelPath.?, tile.src)) |ldtk_sprite| {
+                        if (atlas.findSpriteIndex(ldtk_sprite.name)) |sprite_index| {
+                            const sprite_info = atlas.sprites[sprite_index];
+                            const tile_sprite = try entities.new();
+                            const pos = vec3(
+                                @as(f32, @floatFromInt(tile.px[0])) * world_scale,
+                                -@as(f32, @floatFromInt(tile.px[1])) * world_scale,
+                                z_layer,
+                            );
 
-                        try SpriteCalc.apply(sprite, tile_sprite, .{
-                            .sprite_info = sprite_info,
-                            .pos = pos,
-                            .scale = Vec3.splat(world_scale),
-                            .flipped = false,
-                        });
-                        try sprite.set(tile_sprite, .pipeline, app.state().pipeline);
-                        try app.set(tile_sprite, .pixi_sprite, sprite_info);
-                        try app.set(tile_sprite, .is_game_scene, {});
-                        try app.set(tile_sprite, .is_tile, {}); // This entity belongs to the start scene
+                            try SpriteCalc.apply(sprite, tile_sprite, .{
+                                .sprite_info = sprite_info,
+                                .pos = pos,
+                                .scale = Vec3.splat(world_scale),
+                                .flipped = false,
+                            });
+                            try sprite.set(tile_sprite, .pipeline, app.state().pipeline);
+                            try app.set(tile_sprite, .pixi_sprite, sprite_info);
+                            try app.set(tile_sprite, .is_game_scene, {});
+                            try app.set(tile_sprite, .is_tile, {}); // This entity belongs to the start scene
 
-                        continue :building_tiles;
+                        }
                     }
+
+                    continue :building_tiles;
+
                     //std.debug.panic("failed to find sprite for tile: {}\n", .{tile});
                 }
                 z_layer += 1;

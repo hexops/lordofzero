@@ -26,6 +26,21 @@ pub const LDTKCompatibility = struct {
     }
 
     tilesets: []LDTKTileset,
+
+    pub fn findSpriteByLayerSrc(self: LDTKCompatibility, layer_path: []const u8, sprite_src: [2]i64) ?LDTKSprite {
+        for (self.tilesets) |tileset| {
+            for (tileset.layer_paths) |current_layer_path| {
+                if (std.mem.eql(u8, layer_path, current_layer_path)) {
+                    for (tileset.sprites) |current_sprite| {
+                        if (current_sprite.src[0] == sprite_src[0] and current_sprite.src[1] == sprite_src[1]) {
+                            return current_sprite;
+                        }
+                    }
+                }
+            }
+        }
+        return null;
+    }
 };
 
 pub const LDTKSprite = struct {
@@ -72,6 +87,15 @@ pub const Atlas = struct {
 
     sprites: []Sprite,
     animations: []Animation,
+
+    pub fn findSpriteIndex(self: Atlas, name: [:0]const u8) ?usize {
+        for (self.sprites, 0..) |sprite, i| {
+            if (std.mem.startsWith(u8, sprite.name, name)) {
+                return i;
+            }
+        }
+        return null;
+    }
 };
 
 pub const Sprite = struct {
