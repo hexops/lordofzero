@@ -408,7 +408,6 @@ fn updateScene(
 
                 building_tiles: for (layer.gridTiles) |tile| {
                     // Find the pixi sprite corresponding to this tile
-
                     if (pixi_ldtk.findSpriteByLayerSrc(layer.__tilesetRelPath.?, tile.src)) |ldtk_sprite| {
                         if (atlas.findSpriteIndex(ldtk_sprite.name)) |sprite_index| {
                             const sprite_info = atlas.sprites[sprite_index];
@@ -418,6 +417,7 @@ fn updateScene(
                                 -@as(f32, @floatFromInt(tile.px[1])) * world_scale,
                                 z_layer,
                             );
+                            z_layer += 1;
 
                             try SpriteCalc.apply(sprite, tile_sprite, .{
                                 .sprite_info = sprite_info,
@@ -428,16 +428,14 @@ fn updateScene(
                             try sprite.set(tile_sprite, .pipeline, app.state().pipeline);
                             try app.set(tile_sprite, .pixi_sprite, sprite_info);
                             try app.set(tile_sprite, .is_game_scene, {});
-                            try app.set(tile_sprite, .is_tile, {}); // This entity belongs to the start scene
-
+                            try app.set(tile_sprite, .is_tile, {}); // This entity is an LDTK tile
                         }
+                    } else {
+                        std.debug.panic("failed to find sprite for tile: {}\n", .{tile});
                     }
-
                     continue :building_tiles;
-
-                    //std.debug.panic("failed to find sprite for tile: {}\n", .{tile});
                 }
-                z_layer += 1;
+                z_layer += 10000;
             }
         },
     }

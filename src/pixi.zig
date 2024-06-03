@@ -30,9 +30,25 @@ pub const LDTKCompatibility = struct {
     pub fn findSpriteByLayerSrc(self: LDTKCompatibility, layer_path: []const u8, sprite_src: [2]i64) ?LDTKSprite {
         for (self.tilesets) |tileset| {
             for (tileset.layer_paths) |current_layer_path| {
-                if (std.mem.eql(u8, layer_path, current_layer_path)) {
+                // TODO: for some reason current_layer_path can have spaces instead of underscores
+                // in layer name:
+                //
+                //         layer_path=pixi-ldtk/src/tiles/tileset_64x320__Layer_0.png
+                // current_layer_path=pixi-ldtk/src/tiles/tileset_64x320__Layer 0.png
+                // std.debug.print("layer_path={s} current_layer_path={s}\n", .{ layer_path, current_layer_path });
+                // std.mem.replace(comptime T: type, input: []const T, needle: []const T, replacement: []const T, output: []T)
+                const current_layer_path_fixed = std.mem.replaceOwned(u8, std.heap.page_allocator, current_layer_path, " ", "_") catch unreachable;
+
+                if (std.mem.eql(u8, layer_path, current_layer_path_fixed)) {
                     for (tileset.sprites) |current_sprite| {
-                        if (current_sprite.src[0] == sprite_src[0] and current_sprite.src[1] == sprite_src[1]) {
+                        const x = sprite_src[0];
+                        const y = sprite_src[1];
+                        const min_x = current_sprite.src[0];
+                        const max_x = current_sprite.src[0] + tileset.sprite_size[0];
+                        const min_y = current_sprite.src[1];
+                        const max_y = current_sprite.src[1] + tileset.sprite_size[1];
+
+                        if (x >= min_x and x <= max_x and y >= min_y and y <= max_y) {
                             return current_sprite;
                         }
                     }
