@@ -77,13 +77,12 @@ rand: std.rand.DefaultPrng,
 time: f32,
 allocator: std.mem.Allocator,
 pipeline: mach.EntityID,
-tileset_pipeline: mach.EntityID,
 text_pipeline: mach.EntityID,
 frame_encoder: *gpu.CommandEncoder = undefined,
 frame_render_pass: *gpu.RenderPassEncoder = undefined,
-parsed_atlas: pixi.ParsedFile,
-parsed_tileset_atlas: pixi.ParsedFile,
+parsed_atlas: pixi.ParsedAtlas,
 parsed_level: ldtk.ParsedFile,
+parsed_ldtk_compatibility: pixi.ParsedLDTKCompatibility,
 scene: Scene = .game,
 prev_scene: Scene = .none,
 
@@ -101,7 +100,6 @@ fn deinit(
     text_pipeline.schedule(.deinit);
     core.schedule(.deinit);
     app.state().parsed_atlas.deinit();
-    app.state().parsed_tileset_atlas.deinit();
     app.state().parsed_level.deinit();
 }
 
@@ -142,10 +140,7 @@ fn afterInit(
     const allocator = gpa.allocator();
 
     const pipeline = try entities.new();
-    try sprite_pipeline.set(pipeline, .texture, try loadTexture(core, allocator, assets.sprites_png));
-
-    const tileset_pipeline = try entities.new();
-    try sprite_pipeline.set(tileset_pipeline, .texture, try loadTexture(core, allocator, assets.tileset_png));
+    try sprite_pipeline.set(pipeline, .texture, try loadTexture(core, allocator, assets.lordofzero_png));
 
     sprite_pipeline.schedule(.update);
 
@@ -155,9 +150,10 @@ fn afterInit(
     text_pipeline.schedule(.update);
 
     // Load pixi atlas file
-    const parsed_atlas = try pixi.File.parseSlice(allocator, assets.sprites_atlas);
-    const parsed_tileset_atlas = try pixi.File.parseSlice(allocator, assets.tileset_atlas);
+    const parsed_atlas = try pixi.Atlas.parseSlice(allocator, assets.lordofzero_atlas);
     std.debug.print("loaded sprite atlas: {} sprites, {} animations\n", .{ parsed_atlas.value.sprites.len, parsed_atlas.value.animations.len });
+
+    const parsed_ldtk_compatibility = try pixi.LDTKCompatibility.parseSlice(allocator, assets.pixi_ldtk_json);
 
     // Preload .ldtk level file
     const parsed_level = try ldtk.File.parseSlice(allocator, assets.level_ldtk);
@@ -176,11 +172,10 @@ fn afterInit(
         .time = 0,
         .allocator = allocator,
         .pipeline = pipeline,
-        .tileset_pipeline = tileset_pipeline,
         .text_pipeline = text_pipeline_id,
         .parsed_atlas = parsed_atlas,
-        .parsed_tileset_atlas = parsed_tileset_atlas,
         .parsed_level = parsed_level,
+        .parsed_ldtk_compatibility = parsed_ldtk_compatibility,
     });
 
     // Load the initial starting screen scene
@@ -376,6 +371,9 @@ fn updateScene(
             };
 
             const atlas = app.state().parsed_atlas.value;
+            const pixi_ldtk: pixi.LDTKCompatibility = app.state().parsed_ldtk_compatibility.value;
+            _ = pixi_ldtk; // autofix
+
             for (atlas.sprites) |sprite_info| {
                 if (!std.mem.startsWith(u8, sprite_info.name, "wrench_idle")) continue;
 
@@ -389,14 +387,6 @@ fn updateScene(
                 try app.set(app.state().player, .is_game_scene, {});
                 break;
             }
-
-            // Our atlas is all of our sprites, tightly packed for optimal rendering performance.
-            //
-            // The tileset atlas is the same exact thing (all our sprites), but not tightly packed
-            // so that LDTK can understand / work with them. Anytime LDTK gives us a location in our
-            // tileset, we just find the name of that sprite and then render the tightly packed
-            // version instead.
-            const tileset_atlas = app.state().parsed_tileset_atlas.value;
 
             std.debug.print("loading level: {s} {}x{}px, layers: {}\n", .{ level.identifier, level.pxWid, level.pxHei, level.layerInstances.?.len });
             var z_layer: f32 = 0.0;
@@ -419,7 +409,7 @@ fn updateScene(
 
                 building_tiles: for (layer.gridTiles) |tile| {
                     // Find the pixi sprite corresponding to this tile
-                    for (tileset_atlas.sprites) |sprite_info| {
+                    for (atlas.sprites) |sprite_info| {
                         if (tile.src[0] != sprite_info.source[0] or tile.src[1] != sprite_info.source[1]) continue;
 
                         const tile_sprite = try entities.new();
@@ -435,14 +425,14 @@ fn updateScene(
                             .scale = Vec3.splat(world_scale),
                             .flipped = false,
                         });
-                        try sprite.set(tile_sprite, .pipeline, app.state().tileset_pipeline);
+                        try sprite.set(tile_sprite, .pipeline, app.state().pipeline);
                         try app.set(tile_sprite, .pixi_sprite, sprite_info);
                         try app.set(tile_sprite, .is_game_scene, {});
                         try app.set(tile_sprite, .is_tile, {}); // This entity belongs to the start scene
 
                         continue :building_tiles;
                     }
-                    std.debug.panic("failed to find sprite for tile: {}\n", .{tile});
+                    //std.debug.panic("failed to find sprite for tile: {}\n", .{tile});
                 }
                 z_layer += 1;
             }
@@ -819,7 +809,6 @@ fn tick(
     const view = Mat4x4.translate(app.state().camera_position.mulScalar(-1));
     const view_projection = projection.mul(&view);
     try sprite_pipeline.set(app.state().pipeline, .view_projection, view_projection);
-    try sprite_pipeline.set(app.state().tileset_pipeline, .view_projection, view_projection);
     try text_pipeline.set(app.state().pipeline, .view_projection, view_projection);
 
     // Perform pre-render work

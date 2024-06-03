@@ -14,10 +14,8 @@ pub const sfx = struct {
 
 pub const level_ldtk = @embedFile("level.ldtk");
 
-pub const sprites_h_png = @embedFile("sprites_h.png");
-pub const sprites_atlas = @embedFile("sprites.atlas");
-pub const sprites_png = @embedFile("sprites.png");
+pub const lordofzero_h_png = @embedFile("lordofzero_h.png");
+pub const lordofzero_atlas = @embedFile("lordofzero.atlas");
+pub const lordofzero_png = @embedFile("lordofzero.png");
 
-pub const tileset_h_png = @embedFile("tileset_h.png");
-pub const tileset_atlas = @embedFile("tileset.atlas");
-pub const tileset_png = @embedFile("tileset.png");
+pub const pixi_ldtk_json = @embedFile("src/pixi-ldtk.json");
