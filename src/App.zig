@@ -39,6 +39,7 @@ pub const components = .{
     .is_game_scene = .{ .type = void },
     .is_logo = .{ .type = void },
     .is_tile = .{ .type = void },
+    .is_entity = .{ .type = void },
     .pixi_sprite = .{ .type = pixi.Sprite },
     .after_play_change_scene = .{ .type = Scene },
     .effect_timer = .{ .type = mach.Timer },
@@ -63,6 +64,7 @@ last_facing_direction: Vec2 = vec2(0, 0),
 player_position: Vec3 = vec3(0, 0, 0), // z == player layer
 camera_position: Vec3 = vec3(0, 0, 0),
 player_wants_to_attack: bool = false,
+player_wants_to_run: bool = false,
 attack_cooldown: f32 = 1.0,
 attack_cooldown_timer: mach.Timer,
 is_attacking: bool = false,
@@ -350,6 +352,7 @@ fn updateScene(
 
             // Create the "Wrench" player sprite
             app.state().player_position = blk: {
+                var z_layer: f32 = 0;
                 for (level.layerInstances.?) |layer| {
                     for (layer.entityInstances) |layer_entity| {
                         for (layer_entity.__tags) |tag| {
@@ -358,14 +361,16 @@ fn updateScene(
                             // TODO: account for optional layer offsets, if they exist
                             const entity_pos_x: f32 = @floatFromInt(layer_entity.px[0]);
                             const entity_pos_y: f32 = @floatFromInt(layer_entity.px[1]);
+                            const entity_width: f32 = @floatFromInt(layer_entity.width);
                             const entity_height: f32 = @floatFromInt(layer_entity.height);
                             break :blk vec3(
-                                entity_pos_x * world_scale,
+                                (entity_pos_x + (entity_width / 2.0)) * world_scale,
                                 -((entity_pos_y) + entity_height) * world_scale,
-                                0, // z layer of player
+                                z_layer,
                             );
                         }
                     }
+                    z_layer += 10000;
                 }
                 @panic("could not find entity in level tagged 'player_start'");
             };
@@ -389,7 +394,7 @@ fn updateScene(
 
             std.debug.print("loading level: {s} {}x{}px, layers: {}\n", .{ level.identifier, level.pxWid, level.pxHei, level.layerInstances.?.len });
             var z_layer: f32 = 0.0;
-            for (level.layerInstances.?) |layer| {
+            building_layers: for (level.layerInstances.?) |layer| {
                 std.debug.print(" layer: {s}, type={s}, visible={}, grid_size={}px, {}x{} (grid-based size)\n", .{
                     layer.__identifier,
                     @tagName(layer.__type),
@@ -405,6 +410,10 @@ fn updateScene(
                     layer.gridTiles.len,
                     layer.__tilesetRelPath,
                 });
+                for (app.state().parsed_level.value.defs.layers) |layer_def| {
+                    if (layer_def.uid == layer.layerDefUid and
+                        (layer_def.parallaxFactorX != 0 or layer_def.parallaxFactorY != 0)) continue :building_layers;
+                }
 
                 building_tiles: for (layer.gridTiles) |tile| {
                     // Find the pixi sprite corresponding to this tile
@@ -417,7 +426,7 @@ fn updateScene(
                                 -@as(f32, @floatFromInt(tile.px[1])) * world_scale,
                                 z_layer,
                             );
-                            z_layer += 1;
+                            z_layer -= 1;
 
                             try SpriteCalc.apply(sprite, tile_sprite, .{
                                 .sprite_info = sprite_info,
@@ -431,10 +440,65 @@ fn updateScene(
                             try app.set(tile_sprite, .is_tile, {}); // This entity is an LDTK tile
                         }
                     } else {
-                        std.debug.panic("failed to find sprite for tile: {}\n", .{tile});
+                        // std.debug.panic("failed to find sprite for tile: {}\n", .{tile});
                     }
                     continue :building_tiles;
                 }
+
+                building_entities: for (layer.entityInstances) |entity_instance| {
+                    const tile = entity_instance.__tile orelse continue :building_entities;
+
+                    for (entity_instance.__tags) |tag| {
+                        if (std.mem.eql(u8, tag, "player_start") or std.mem.eql(u8, tag, "peasant_start") or std.mem.eql(u8, tag, "hidden")) {
+                            continue :building_entities;
+                        }
+                    }
+
+                    const tilesetRelPath = blk: {
+                        for (app.state().parsed_level.value.defs.tilesets) |tileset_def| {
+                            if (tileset_def.uid != tile.tilesetUid) continue;
+                            break :blk tileset_def.relPath;
+                        }
+                        @panic("failed to find tileset for entity");
+                    };
+
+                    // Find the pixi sprite corresponding to the entity tile
+                    const tile_src: [2]i64 = .{ tile.x, tile.y };
+                    if (pixi_ldtk.findSpriteByLayerSrc(tilesetRelPath.?, tile_src)) |ldtk_sprite| {
+                        if (atlas.findSpriteIndex(ldtk_sprite.name)) |sprite_index| {
+                            const sprite_info = atlas.sprites[sprite_index];
+                            const tile_sprite = try entities.new();
+                            const pos = vec3(
+                                @as(f32, @floatFromInt(entity_instance.px[0])) * world_scale,
+                                -@as(f32, @floatFromInt(entity_instance.px[1])) * world_scale,
+                                z_layer,
+                            );
+                            z_layer -= 1;
+
+                            try SpriteCalc.apply(sprite, tile_sprite, .{
+                                .sprite_info = sprite_info,
+                                .pos = pos,
+                                .scale = Vec3.splat(world_scale),
+                                .flipped = false,
+                            });
+                            try sprite.set(tile_sprite, .pipeline, app.state().pipeline);
+                            try app.set(tile_sprite, .pixi_sprite, sprite_info);
+                            try app.set(tile_sprite, .is_game_scene, {});
+                            try app.set(tile_sprite, .is_entity, {}); // This entity is an LDTK entity
+                        }
+                    } else {
+                        std.debug.panic("failed to find sprite for entity tile: {}\n", .{tile});
+                    }
+
+                    // // Find the entity definition corresponding to this entity instance
+                    // for (app.state().parsed_level.value.defs.entities) |entity_def| {
+                    //     if (std.mem.eql(u8, entity_instance.entityIid, entity_def.iid) {
+
+                    //         continue :building_entities;
+                    //     }
+                    // }
+                }
+
                 z_layer += 10000;
             }
         },
@@ -539,7 +603,7 @@ fn updateEffects(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mo
             try SpriteCalc.apply(sprite, attack_fx, .{
                 .sprite_info = effect_sprite_info,
                 .pos = position,
-                .scale = Vec3.splat(world_scale),
+                .scale = Vec3.splat(world_scale * 2.0),
                 .flipped = flip,
             });
         }
@@ -558,6 +622,7 @@ fn tick(
     var iter = mach.core.pollEvents();
     var direction = app.state().direction;
     var player_wants_to_attack = app.state().player_wants_to_attack;
+    var player_wants_to_run = app.state().player_wants_to_run;
     while (iter.next()) |event| {
         switch (event) {
             .key_press => |ev| {
@@ -567,6 +632,7 @@ fn tick(
                     .up => direction.v[1] += 1,
                     .down => direction.v[1] -= 1,
                     .space => player_wants_to_attack = true,
+                    .left_shift => player_wants_to_run = true,
                     else => {},
                 }
                 if (app.state().scene == .start) {
@@ -596,6 +662,7 @@ fn tick(
                     .up => direction.v[1] -= 1,
                     .down => direction.v[1] += 1,
                     .space => player_wants_to_attack = false,
+                    .left_shift => player_wants_to_run = false,
                     else => {},
                 }
             },
@@ -606,6 +673,7 @@ fn tick(
     const begin_moving = !app.state().is_attacking and app.state().direction.eql(&vec2(0, 0)) and !direction.eql(&vec2(0, 0));
     app.state().direction = direction;
     app.state().player_wants_to_attack = player_wants_to_attack;
+    app.state().player_wants_to_run = player_wants_to_run;
 
     // Multiply by delta_time to ensure that movement is the same speed regardless of the frame rate.
     const delta_time = app.state().delta_timer.lap();
@@ -685,7 +753,8 @@ fn tick(
             if (!dir.eql(&vec2(0, 0))) {
                 app.state().last_facing_direction = dir;
             }
-            const speed = 250.0;
+            const base_speed = 250.0;
+            const speed: f32 = if (app.state().player_wants_to_run) base_speed * 2.0 else base_speed;
             const pos = app.state().player_position.add(
                 &vec3(dir.v[0], 0, 0).mulScalar(speed).mulScalar(delta_time),
             );
@@ -738,7 +807,9 @@ fn tick(
                 app.state().player_anim_frame = @intCast(i);
 
                 // If walking, play footstep sfx every 2nd frame
-                if (!app.state().is_attacking and !dir.eql(&vec2(0, 0)) and i % 2 == 0) {
+                if (!app.state().is_attacking and !dir.eql(&vec2(0, 0)) and
+                    ((app.state().player_wants_to_run and i % 1 == 0) or (!app.state().player_wants_to_run and i % 2 == 0)))
+                {
                     // Load our "footsteps" sfx
                     // TODO: load sound effects somewhere and store them, so that we don't decode on every footstep :)
                     const sfx_fbs = std.io.fixedBufferStream(assets.sfx.footsteps);
@@ -751,7 +822,7 @@ fn tick(
                     try audio.set(sfx_entity, .channels, sfx.channels);
                     try audio.set(sfx_entity, .playing, true);
                     try audio.set(sfx_entity, .index, 0);
-                    try audio.set(sfx_entity, .volume, 4.3);
+                    try audio.set(sfx_entity, .volume, 2.3);
                     try app.set(sfx_entity, .is_game_scene, {}); // This entity belongs to the start scene
                     try app.set(sfx_entity, .is_sfx, {}); // Mark our audio entity is sfx, so we can distinguish it from bgm later.
                 }
@@ -798,10 +869,16 @@ fn tick(
     });
 
     // Smooth camera following
+    const map_left = 800;
+    const map_right = 18950;
     const camera_target = switch (app.state().scene) {
         .none => vec3(0, 0, 0),
         .start => vec3(0, 0, 0),
-        .game => vec3(app.state().player_position.x(), app.state().player_position.y() + (height_px / 4), 0),
+        .game => vec3(
+            math.clamp(app.state().player_position.x(), map_left, map_right),
+            app.state().player_position.y() + (height_px / 4),
+            0,
+        ),
     };
     const camera_target_diff = camera_target.sub(&app.state().camera_position);
     const camera_lag_seconds = 0.5;

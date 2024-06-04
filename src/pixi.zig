@@ -41,14 +41,7 @@ pub const LDTKCompatibility = struct {
 
                 if (std.mem.eql(u8, layer_path, current_layer_path_fixed)) {
                     for (tileset.sprites) |current_sprite| {
-                        const x = sprite_src[0];
-                        const y = sprite_src[1];
-                        const min_x = current_sprite.src[0];
-                        const max_x = current_sprite.src[0] + tileset.sprite_size[0];
-                        const min_y = current_sprite.src[1];
-                        const max_y = current_sprite.src[1] + tileset.sprite_size[1];
-
-                        if (x >= min_x and x <= max_x and y >= min_y and y <= max_y) {
+                        if (sprite_src[0] == current_sprite.src[0] and sprite_src[1] == current_sprite.src[1]) {
                             return current_sprite;
                         }
                     }
