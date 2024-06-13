@@ -603,7 +603,7 @@ fn updateEffects(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mo
             try SpriteCalc.apply(sprite, attack_fx, .{
                 .sprite_info = effect_sprite_info,
                 .pos = position,
-                .scale = Vec3.splat(world_scale * 2.0),
+                .scale = Vec3.splat(world_scale),
                 .flipped = flip,
             });
         }
@@ -736,7 +736,8 @@ fn tick(
             var end_attack: bool = false;
 
             // Determine the next player animation frame
-            const animation_fps: f32 = @floatFromInt(animation_info.fps);
+            var animation_fps: f32 = @floatFromInt(animation_info.fps);
+            if (app.state().player_wants_to_run) animation_fps *= 2;
             var i: usize = @intFromFloat(app.state().player_anim_timer.read() * animation_fps);
             if (i >= animation_info.length) {
                 app.state().player_anim_timer.reset();
