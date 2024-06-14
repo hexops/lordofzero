@@ -505,57 +505,6 @@ fn updateScene(
     }
 }
 
-const SpriteCalc = struct {
-    transform: Mat4x4,
-    uv_transform: Mat3x3,
-    size: Vec2,
-
-    pub const Input = struct {
-        sprite_info: pixi.Sprite,
-        pos: Vec3,
-        scale: Vec3,
-        flipped: bool,
-    };
-
-    fn init(in: Input) SpriteCalc {
-        const x: f32 = @floatFromInt(in.sprite_info.source[0]);
-        const y: f32 = @floatFromInt(in.sprite_info.source[1]);
-        const width: f32 = @floatFromInt(in.sprite_info.source[2]);
-        const height: f32 = @floatFromInt(in.sprite_info.source[3]);
-        const origin_x: f32 = @floatFromInt(in.sprite_info.origin[0]);
-        const origin_y: f32 = @floatFromInt(in.sprite_info.origin[1]);
-
-        const origin = Mat4x4.translate(vec3(
-            if (!in.flipped) -origin_x else -width + origin_x,
-            -height + origin_y,
-            0,
-        ));
-        const scale = Mat4x4.scale(in.scale);
-        const translate = Mat4x4.translate(in.pos);
-
-        var uv_transform = Mat3x3.translate(vec2(x, y));
-        if (in.flipped) {
-            const uv_flip_horizontally = Mat3x3.scale(vec2(-1, 1));
-            const uv_origin_shift = Mat3x3.translate(vec2(width, 0));
-            const uv_translate = Mat3x3.translate(vec2(x, y));
-            uv_transform = uv_origin_shift.mul(&uv_translate).mul(&uv_flip_horizontally);
-        }
-
-        return .{
-            .transform = translate.mul(&scale).mul(&origin),
-            .uv_transform = uv_transform,
-            .size = vec2(width, height),
-        };
-    }
-
-    fn apply(sprite: *gfx.Sprite.Mod, entity: mach.EntityID, in: Input) !void {
-        const calc = SpriteCalc.init(in);
-        try sprite.set(entity, .transform, calc.transform);
-        try sprite.set(entity, .uv_transform, calc.uv_transform);
-        try sprite.set(entity, .size, calc.size);
-    }
-};
-
 fn updateEffects(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mod) !void {
     // Find effect entities with timers
     var q = try entities.query(.{
@@ -572,19 +521,8 @@ fn updateEffects(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mo
             const effect_dissolve_name = "ground_attack_dissolve_main";
 
             const atlas = app.state().parsed_atlas.value;
-            const effect_animation_info: pixi.Animation = blk: {
-                for (atlas.animations) |anim| {
-                    if (std.mem.eql(u8, anim.name, effect_animation_name)) break :blk anim;
-                }
-                @panic("cannot find animation");
-            };
-
-            const dissolve_animation_info: pixi.Animation = blk: {
-                for (atlas.animations) |anim| {
-                    if (std.mem.eql(u8, anim.name, effect_dissolve_name)) break :blk anim;
-                }
-                @panic("cannot find animation");
-            };
+            const effect_animation_info = animationByName(atlas, effect_animation_name).?;
+            const dissolve_animation_info = animationByName(atlas, effect_dissolve_name).?;
 
             // Determine the next player animation frame
             const animation_fps: f32 = @floatFromInt(effect_animation_info.fps);
@@ -726,12 +664,7 @@ fn tick(
 
             // Render the next animation frame for Wrench
             const atlas = app.state().parsed_atlas.value;
-            const animation_info: pixi.Animation = blk: {
-                for (atlas.animations) |anim| {
-                    if (std.mem.eql(u8, anim.name, animation_name)) break :blk anim;
-                }
-                @panic("cannot find animation");
-            };
+            const animation_info = animationByName(atlas, animation_name).?;
 
             var end_attack: bool = false;
 
@@ -774,14 +707,7 @@ fn tick(
 
             if (end_attack) {
                 const attack_fx = try entities.new();
-                const effect_animation_name = "ground_attack_main";
-
-                const effect_animation_info: pixi.Animation = blk: {
-                    for (atlas.animations) |anim| {
-                        if (std.mem.eql(u8, anim.name, effect_animation_name)) break :blk anim;
-                    }
-                    @panic("cannot find animation");
-                };
+                const effect_animation_info = animationByName(atlas, "ground_attack_main").?;
 
                 const z_layer: f32 = 0;
                 const position: Vec3 = vec3(
@@ -1010,3 +936,59 @@ fn rgb24ToRgba32(allocator: std.mem.Allocator, in: []zigimg.color.Rgb24) !zigimg
     }
     return out;
 }
+
+fn animationByName(atlas: pixi.Atlas, anim_name: []const u8) ?pixi.Animation {
+    for (atlas.animations) |anim| if (std.mem.eql(u8, anim.name, anim_name)) return anim;
+    return null;
+}
+
+const SpriteCalc = struct {
+    transform: Mat4x4,
+    uv_transform: Mat3x3,
+    size: Vec2,
+
+    pub const Input = struct {
+        sprite_info: pixi.Sprite,
+        pos: Vec3,
+        scale: Vec3,
+        flipped: bool,
+    };
+
+    fn init(in: Input) SpriteCalc {
+        const x: f32 = @floatFromInt(in.sprite_info.source[0]);
+        const y: f32 = @floatFromInt(in.sprite_info.source[1]);
+        const width: f32 = @floatFromInt(in.sprite_info.source[2]);
+        const height: f32 = @floatFromInt(in.sprite_info.source[3]);
+        const origin_x: f32 = @floatFromInt(in.sprite_info.origin[0]);
+        const origin_y: f32 = @floatFromInt(in.sprite_info.origin[1]);
+
+        const origin = Mat4x4.translate(vec3(
+            if (!in.flipped) -origin_x else -width + origin_x,
+            -height + origin_y,
+            0,
+        ));
+        const scale = Mat4x4.scale(in.scale);
+        const translate = Mat4x4.translate(in.pos);
+
+        var uv_transform = Mat3x3.translate(vec2(x, y));
+        if (in.flipped) {
+            const uv_flip_horizontally = Mat3x3.scale(vec2(-1, 1));
+            const uv_origin_shift = Mat3x3.translate(vec2(width, 0));
+            const uv_translate = Mat3x3.translate(vec2(x, y));
+            uv_transform = uv_origin_shift.mul(&uv_translate).mul(&uv_flip_horizontally);
+        }
+
+        return .{
+            .transform = translate.mul(&scale).mul(&origin),
+            .uv_transform = uv_transform,
+            .size = vec2(width, height),
+        };
+    }
+
+    fn apply(sprite: *gfx.Sprite.Mod, entity: mach.EntityID, in: Input) !void {
+        const calc = SpriteCalc.init(in);
+        try sprite.set(entity, .transform, calc.transform);
+        try sprite.set(entity, .uv_transform, calc.uv_transform);
+        try sprite.set(entity, .size, calc.size);
+    }
+};
