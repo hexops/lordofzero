@@ -22,14 +22,24 @@ pub const name = .app;
 pub const Mod = mach.Mod(@This());
 
 pub const systems = .{
+    // Systems mach.Core will schedule to run:
     .init = .{ .handler = init },
     .deinit = .{ .handler = deinit },
-    .after_init = .{ .handler = afterInit },
     .tick = .{ .handler = tick },
-    .end_frame = .{ .handler = endFrame },
+
+    // Systems that run in response to some event
+    .after_init = .{ .handler = afterInit },
     .audio_state_change = .{ .handler = audioStateChange },
-    .update_scene = .{ .handler = updateScene },
+    .change_scene = .{ .handler = changeScene },
+
+    // Systems that may run each frame
+    .poll_input = .{ .handler = pollInput },
+    .update_start_scene = .{ .handler = updateStartScene },
+    .update_game_scene = .{ .handler = updateGameScene },
+    .update_camera = .{ .handler = updateCamera },
     .update_effects = .{ .handler = updateEffects },
+    .render_frame = .{ .handler = renderFrame },
+    .finish_frame = .{ .handler = finishFrame },
 };
 
 pub const components = .{
@@ -42,8 +52,8 @@ pub const components = .{
     .is_entity = .{ .type = void },
     .pixi_sprite = .{ .type = pixi.Sprite },
     .after_play_change_scene = .{ .type = Scene },
-    .effect_timer = .{ .type = mach.Timer },
-    .is_flipped = .{ .type = bool },
+    .sprite_timer = .{ .type = mach.Timer },
+    .sprite_flipped = .{ .type = bool },
     .position = .{ .type = Vec3 },
 };
 
@@ -60,6 +70,7 @@ var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
 player: mach.EntityID,
 direction: Vec2 = vec2(0, 0),
+last_direction: Vec2 = vec2(0, 0),
 last_facing_direction: Vec2 = vec2(0, 0),
 player_position: Vec3 = vec3(0, 0, 0), // z == player layer
 camera_position: Vec3 = vec3(0, 0, 0),
@@ -72,7 +83,8 @@ timer: mach.Timer,
 delta_timer: mach.Timer,
 spawn_timer: mach.Timer,
 fps_timer: mach.Timer,
-player_anim_timer: mach.Timer,
+player_sprite_timer: mach.Timer,
+delta_time: f32 = 0,
 player_anim_frame: isize = -1,
 frame_count: usize,
 rand: std.rand.DefaultPrng,
@@ -168,7 +180,7 @@ fn afterInit(
         .delta_timer = try mach.Timer.start(),
         .spawn_timer = try mach.Timer.start(),
         .fps_timer = try mach.Timer.start(),
-        .player_anim_timer = try mach.Timer.start(),
+        .player_sprite_timer = try mach.Timer.start(),
         .frame_count = 0,
         .rand = std.rand.DefaultPrng.init(1337),
         .time = 0,
@@ -181,7 +193,7 @@ fn afterInit(
     });
 
     // Load the initial starting screen scene
-    app.schedule(.update_scene);
+    app.schedule(.change_scene);
 
     // We're ready for .tick to run
     core.schedule(.start);
@@ -214,13 +226,13 @@ fn audioStateChange(
 
             if (app.get(id, .after_play_change_scene)) |scene| {
                 app.state().scene = scene;
-                app.schedule(.update_scene);
+                app.schedule(.change_scene);
             }
         }
     }
 }
 
-fn updateScene(
+fn changeScene(
     sprite: *gfx.Sprite.Mod,
     app: *Mod,
     entities: *mach.Entities.Mod,
@@ -489,14 +501,6 @@ fn updateScene(
                     } else {
                         std.debug.panic("failed to find sprite for entity tile: {}\n", .{tile});
                     }
-
-                    // // Find the entity definition corresponding to this entity instance
-                    // for (app.state().parsed_level.value.defs.entities) |entity_def| {
-                    //     if (std.mem.eql(u8, entity_instance.entityIid, entity_def.iid) {
-
-                    //         continue :building_entities;
-                    //     }
-                    // }
                 }
 
                 z_layer += 10000;
@@ -506,40 +510,37 @@ fn updateScene(
 }
 
 fn updateEffects(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mod) !void {
-    // Find effect entities with timers
     var q = try entities.query(.{
         .ids = mach.Entities.Mod.read(.id),
-        .timers = Mod.write(.effect_timer),
-        .flips = Mod.read(.is_flipped),
+        .timers = Mod.write(.sprite_timer),
+        .flips = Mod.read(.sprite_flipped),
         .positions = Mod.read(.position),
     });
-
     while (q.next()) |v| {
         for (v.ids, v.timers, v.flips, v.positions) |id, *timer, flip, position| {
-            const attack_fx = id;
             const effect_animation_name = "ground_attack_main";
             const effect_dissolve_name = "ground_attack_dissolve_main";
 
             const atlas = app.state().parsed_atlas.value;
-            const effect_animation_info = animationByName(atlas, effect_animation_name).?;
+            const anim_info = animationByName(atlas, effect_animation_name).?;
             const dissolve_animation_info = animationByName(atlas, effect_dissolve_name).?;
 
             // Determine the next player animation frame
-            const animation_fps: f32 = @floatFromInt(effect_animation_info.fps);
+            const animation_fps: f32 = @floatFromInt(anim_info.fps);
             const i: usize = @intFromFloat(timer.read() * animation_fps);
 
-            if (i > (effect_animation_info.length + dissolve_animation_info.length) - 2) {
+            if (i > (anim_info.length + dissolve_animation_info.length) - 2) {
                 try entities.remove(id);
                 continue;
             }
 
-            const effect_sprite_info: pixi.Sprite = if (i > effect_animation_info.length)
-                atlas.sprites[dissolve_animation_info.start + (i - effect_animation_info.length)]
+            const sprite_info: pixi.Sprite = if (i > anim_info.length)
+                atlas.sprites[dissolve_animation_info.start + (i - anim_info.length)]
             else
-                atlas.sprites[effect_animation_info.start + i];
+                atlas.sprites[anim_info.start + i];
 
-            try SpriteCalc.apply(sprite, attack_fx, .{
-                .sprite_info = effect_sprite_info,
+            try SpriteCalc.apply(sprite, id, .{
+                .sprite_info = sprite_info,
                 .pos = position,
                 .scale = Vec3.splat(world_scale),
                 .flipped = flip,
@@ -549,10 +550,23 @@ fn updateEffects(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mo
 }
 
 fn tick(
-    core: *mach.Core.Mod,
+    app: *Mod,
     sprite: *gfx.Sprite.Mod,
-    sprite_pipeline: *gfx.SpritePipeline.Mod,
-    text_pipeline: *gfx.TextPipeline.Mod,
+) !void {
+    app.schedule(.poll_input);
+    switch (app.state().scene) {
+        .none => {},
+        .start => app.schedule(.update_start_scene),
+        .game => app.schedule(.update_game_scene),
+    }
+    app.schedule(.update_effects);
+    sprite.schedule(.update);
+    app.schedule(.update_camera);
+    app.schedule(.render_frame);
+}
+
+fn pollInput(
+    core: *mach.Core.Mod,
     app: *Mod,
     entities: *mach.Entities.Mod,
     audio: *mach.Audio.Mod,
@@ -608,175 +622,196 @@ fn tick(
             else => {},
         }
     }
-    const begin_moving = !app.state().is_attacking and app.state().direction.eql(&vec2(0, 0)) and !direction.eql(&vec2(0, 0));
+    app.state().last_direction = app.state().direction;
     app.state().direction = direction;
     app.state().player_wants_to_attack = player_wants_to_attack;
     app.state().player_wants_to_run = player_wants_to_run;
 
-    // Multiply by delta_time to ensure that movement is the same speed regardless of the frame rate.
-    const delta_time = app.state().delta_timer.lap();
+    const dt = app.state().delta_timer.lap();
+    app.state().delta_time = dt;
+    defer app.state().time += dt;
+}
 
-    switch (app.state().scene) {
-        .none => {},
-        .start => {
-            // Make the logo sprites (there are multiple, one for each 'sprite layer' in pixi) bounce up and down slowly
-            var q = try entities.query(.{
-                .is_logo = Mod.read(.is_logo),
-                .transforms = gfx.Sprite.Mod.write(.transform),
-                .sprite_infos = Mod.read(.pixi_sprite),
-            });
-            while (q.next()) |v| {
-                for (v.transforms, v.sprite_infos) |*transform, sprite_info| {
-                    const pos = vec3(
-                        0,
-                        (10 * math.sin((app.state().timer.read() / 8.0) * 2 * std.math.pi)),
-                        transform.translation().z(),
-                    );
-                    const calc = SpriteCalc.init(.{
-                        .sprite_info = sprite_info,
-                        .pos = pos,
-                        .scale = Vec3.splat(start_scale),
-                        .flipped = false,
-                    });
-                    transform.* = calc.transform;
-                }
-            }
-        },
-        .game => {
-            const can_attack = app.state().attack_cooldown_timer.read() > app.state().attack_cooldown;
-            const begin_attack = !app.state().is_attacking and can_attack and app.state().player_wants_to_attack;
-
-            if (begin_attack) {
-                app.state().attack_cooldown_timer.reset();
-                app.state().is_attacking = true;
-            }
-            if (begin_moving or begin_attack) {
-                app.state().player_anim_timer.reset();
-                app.state().player_anim_frame = -1;
-            }
-
-            const animation_name = if (app.state().is_attacking)
-                "wrench_attack_main"
-            else if (app.state().direction.eql(&vec2(0, 0)))
-                "wrench_upgrade_main"
-            else
-                "wrench_walk_main";
-
-            // Render the next animation frame for Wrench
-            const atlas = app.state().parsed_atlas.value;
-            const animation_info = animationByName(atlas, animation_name).?;
-
-            var end_attack: bool = false;
-
-            // Determine the next player animation frame
-            var animation_fps: f32 = @floatFromInt(animation_info.fps);
-            if (app.state().player_wants_to_run) animation_fps *= 2;
-            var i: usize = @intFromFloat(app.state().player_anim_timer.read() * animation_fps);
-            if (i >= animation_info.length) {
-                app.state().player_anim_timer.reset();
-                i = 0;
-
-                if (app.state().is_attacking) {
-                    app.state().is_attacking = false;
-                    end_attack = true;
-                }
-            }
-
-            // Player moves in the direction of the keyboard input
-            const dir = if (app.state().is_attacking) app.state().direction.mulScalar(0.5) else app.state().direction;
-            if (!dir.eql(&vec2(0, 0))) {
-                app.state().last_facing_direction = dir;
-            }
-            const base_speed = 250.0;
-            const speed: f32 = if (app.state().player_wants_to_run) base_speed * 2.0 else base_speed;
-            const pos = app.state().player_position.add(
-                &vec3(dir.v[0], 0, 0).mulScalar(speed).mulScalar(delta_time),
+fn updateStartScene(
+    app: *Mod,
+    entities: *mach.Entities.Mod,
+) !void {
+    // Make the logo sprites (there are multiple, one for each 'sprite layer' in pixi) bounce up and down slowly
+    var q = try entities.query(.{
+        .is_logo = Mod.read(.is_logo),
+        .transforms = gfx.Sprite.Mod.write(.transform),
+        .sprite_infos = Mod.read(.pixi_sprite),
+    });
+    while (q.next()) |v| {
+        for (v.transforms, v.sprite_infos) |*transform, sprite_info| {
+            const pos = vec3(
+                0,
+                (10 * math.sin((app.state().timer.read() / 8.0) * 2 * std.math.pi)),
+                transform.translation().z(),
             );
-            app.state().player_position = pos;
-
-            // If the player is moving left instead of right, then flip the sprite so it renders
-            // facing the left instead of its natural right-facing direction.
-            const flipped: bool = app.state().last_facing_direction.v[0] < 0;
-            const player = app.state().player;
-            try SpriteCalc.apply(sprite, player, .{
-                .sprite_info = atlas.sprites[animation_info.start + i],
+            const calc = SpriteCalc.init(.{
+                .sprite_info = sprite_info,
                 .pos = pos,
-                .scale = Vec3.splat(world_scale),
-                .flipped = flipped,
+                .scale = Vec3.splat(start_scale),
+                .flipped = false,
             });
-
-            if (end_attack) {
-                const attack_fx = try entities.new();
-                const effect_animation_info = animationByName(atlas, "ground_attack_main").?;
-
-                const z_layer: f32 = 0;
-                const position: Vec3 = vec3(
-                    if (app.state().last_facing_direction.v[0] >= 0) pos.v[0] + 64.0 else pos.v[0] - 64.0,
-                    pos.v[1],
-                    z_layer,
-                );
-
-                try SpriteCalc.apply(sprite, attack_fx, .{
-                    .sprite_info = atlas.sprites[effect_animation_info.start],
-                    .pos = position,
-                    .scale = Vec3.splat(world_scale),
-                    .flipped = flipped,
-                });
-                try sprite.set(attack_fx, .pipeline, app.state().pipeline);
-                try app.set(attack_fx, .is_game_scene, {});
-                try app.set(attack_fx, .effect_timer, try mach.Timer.start());
-                try app.set(attack_fx, .is_flipped, flipped);
-                try app.set(attack_fx, .position, position);
-            }
-
-            if (i != app.state().player_anim_frame) {
-                // Player animation frame has changed
-                app.state().player_anim_frame = @intCast(i);
-
-                // If walking, play footstep sfx every 2nd frame
-                if (!app.state().is_attacking and !dir.eql(&vec2(0, 0)) and
-                    ((app.state().player_wants_to_run and i % 1 == 0) or (!app.state().player_wants_to_run and i % 2 == 0)))
-                {
-                    // Load our "footsteps" sfx
-                    // TODO: load sound effects somewhere and store them, so that we don't decode on every footstep :)
-                    const sfx_fbs = std.io.fixedBufferStream(assets.sfx.footsteps);
-                    const sfx_sound_stream = std.io.StreamSource{ .const_buffer = sfx_fbs };
-                    const sfx = try mach.Audio.Opus.decodeStream(app.state().allocator, sfx_sound_stream);
-
-                    // Create an audio entity to play our sfx
-                    const sfx_entity = try entities.new();
-                    try audio.set(sfx_entity, .samples, sfx.samples);
-                    try audio.set(sfx_entity, .channels, sfx.channels);
-                    try audio.set(sfx_entity, .playing, true);
-                    try audio.set(sfx_entity, .index, 0);
-                    try audio.set(sfx_entity, .volume, 2.3);
-                    try app.set(sfx_entity, .is_game_scene, {}); // This entity belongs to the start scene
-                    try app.set(sfx_entity, .is_sfx, {}); // Mark our audio entity is sfx, so we can distinguish it from bgm later.
-                }
-
-                // If attacking, play attack noise on first frame
-                if (app.state().is_attacking and i == 0) {
-                    // Load our "freeze" sfx
-                    // TODO: load sound effects somewhere and store them, so that we don't decode on every footstep :)
-                    const sfx_fbs = std.io.fixedBufferStream(assets.sfx.freeze);
-                    const sfx_sound_stream = std.io.StreamSource{ .const_buffer = sfx_fbs };
-                    const sfx = try mach.Audio.Opus.decodeStream(app.state().allocator, sfx_sound_stream);
-
-                    // Create an audio entity to play our sfx
-                    const sfx_entity = try entities.new();
-                    try audio.set(sfx_entity, .samples, sfx.samples);
-                    try audio.set(sfx_entity, .channels, sfx.channels);
-                    try audio.set(sfx_entity, .playing, true);
-                    try audio.set(sfx_entity, .index, 0);
-                    try audio.set(sfx_entity, .volume, 0.6);
-                    try app.set(sfx_entity, .is_game_scene, {}); // This entity belongs to the start scene
-                    try app.set(sfx_entity, .is_sfx, {}); // Mark our audio entity is sfx, so we can distinguish it from bgm later.
-                }
-            }
-        },
+            transform.* = calc.transform;
+        }
     }
-    sprite.schedule(.update);
+}
 
+fn updateGameScene(
+    sprite: *gfx.Sprite.Mod,
+    app: *Mod,
+    entities: *mach.Entities.Mod,
+    audio: *mach.Audio.Mod,
+) !void {
+    const can_attack = app.state().attack_cooldown_timer.read() > app.state().attack_cooldown;
+    const begin_moving = !app.state().is_attacking and app.state().last_direction.eql(&vec2(0, 0)) and !app.state().direction.eql(&vec2(0, 0));
+    const begin_attack = !app.state().is_attacking and can_attack and app.state().player_wants_to_attack;
+
+    if (begin_attack) {
+        app.state().attack_cooldown_timer.reset();
+        app.state().is_attacking = true;
+    }
+    if (begin_moving or begin_attack) {
+        app.state().player_sprite_timer.reset();
+        app.state().player_anim_frame = -1;
+    }
+
+    const animation_name = if (app.state().is_attacking)
+        "wrench_attack_main"
+    else if (app.state().direction.eql(&vec2(0, 0)))
+        "wrench_upgrade_main"
+    else
+        "wrench_walk_main";
+
+    // Render the next animation frame for Wrench
+    const atlas = app.state().parsed_atlas.value;
+    const animation_info = animationByName(atlas, animation_name).?;
+
+    var end_attack: bool = false;
+
+    // Determine the next player animation frame
+    var animation_fps: f32 = @floatFromInt(animation_info.fps);
+    if (app.state().player_wants_to_run) animation_fps *= 2;
+    var i: usize = @intFromFloat(app.state().player_sprite_timer.read() * animation_fps);
+    if (i >= animation_info.length) {
+        app.state().player_sprite_timer.reset();
+        i = 0;
+
+        if (app.state().is_attacking) {
+            app.state().is_attacking = false;
+            end_attack = true;
+        }
+    }
+
+    // Player moves in the direction of the keyboard input
+    const dir = if (app.state().is_attacking) app.state().direction.mulScalar(0.5) else app.state().direction;
+    if (!dir.eql(&vec2(0, 0))) {
+        app.state().last_facing_direction = dir;
+    }
+    const base_speed = 250.0;
+    const speed: f32 = if (app.state().player_wants_to_run) base_speed * 2.0 else base_speed;
+    const pos = app.state().player_position.add(
+        &vec3(dir.v[0], 0, 0).mulScalar(speed).mulScalar(app.state().delta_time),
+    );
+    app.state().player_position = pos;
+
+    // If the player is moving left instead of right, then flip the sprite so it renders
+    // facing the left instead of its natural right-facing direction.
+    const flipped: bool = app.state().last_facing_direction.v[0] < 0;
+    const player = app.state().player;
+    try SpriteCalc.apply(sprite, player, .{
+        .sprite_info = atlas.sprites[animation_info.start + i],
+        .pos = pos,
+        .scale = Vec3.splat(world_scale),
+        .flipped = flipped,
+    });
+
+    if (end_attack) {
+        const attack_fx = try entities.new();
+        const anim_info = animationByName(atlas, "ground_attack_main").?;
+
+        const z_layer: f32 = 0;
+        const position: Vec3 = vec3(
+            if (app.state().last_facing_direction.v[0] >= 0) pos.v[0] + 64.0 else pos.v[0] - 64.0,
+            pos.v[1],
+            z_layer,
+        );
+
+        try SpriteCalc.apply(sprite, attack_fx, .{
+            .sprite_info = atlas.sprites[anim_info.start],
+            .pos = position,
+            .scale = Vec3.splat(world_scale),
+            .flipped = flipped,
+        });
+        try sprite.set(attack_fx, .pipeline, app.state().pipeline);
+        try app.set(attack_fx, .is_game_scene, {});
+        try app.set(attack_fx, .sprite_timer, try mach.Timer.start());
+        try app.set(attack_fx, .sprite_flipped, flipped);
+        try app.set(attack_fx, .position, position);
+    }
+
+    if (i != app.state().player_anim_frame) {
+        // Player animation frame has changed
+        app.state().player_anim_frame = @intCast(i);
+
+        // If walking, play footstep sfx every 2nd frame
+        if (!app.state().is_attacking and !dir.eql(&vec2(0, 0)) and
+            ((app.state().player_wants_to_run and i % 1 == 0) or (!app.state().player_wants_to_run and i % 2 == 0)))
+        {
+            // Load our "footsteps" sfx
+            // TODO: load sound effects somewhere and store them, so that we don't decode on every footstep :)
+            const sfx_fbs = std.io.fixedBufferStream(assets.sfx.footsteps);
+            const sfx_sound_stream = std.io.StreamSource{ .const_buffer = sfx_fbs };
+            const sfx = try mach.Audio.Opus.decodeStream(app.state().allocator, sfx_sound_stream);
+
+            // Create an audio entity to play our sfx
+            const sfx_entity = try entities.new();
+            try audio.set(sfx_entity, .samples, sfx.samples);
+            try audio.set(sfx_entity, .channels, sfx.channels);
+            try audio.set(sfx_entity, .playing, true);
+            try audio.set(sfx_entity, .index, 0);
+            try audio.set(sfx_entity, .volume, 2.3);
+            try app.set(sfx_entity, .is_game_scene, {}); // This entity belongs to the start scene
+            try app.set(sfx_entity, .is_sfx, {}); // Mark our audio entity is sfx, so we can distinguish it from bgm later.
+        }
+
+        // If attacking, play attack noise on first frame
+        if (app.state().is_attacking and i == 0) {
+            // Load our "freeze" sfx
+            // TODO: load sound effects somewhere and store them, so that we don't decode on every footstep :)
+            const sfx_fbs = std.io.fixedBufferStream(assets.sfx.freeze);
+            const sfx_sound_stream = std.io.StreamSource{ .const_buffer = sfx_fbs };
+            const sfx = try mach.Audio.Opus.decodeStream(app.state().allocator, sfx_sound_stream);
+
+            // Create an audio entity to play our sfx
+            const sfx_entity = try entities.new();
+            try audio.set(sfx_entity, .samples, sfx.samples);
+            try audio.set(sfx_entity, .channels, sfx.channels);
+            try audio.set(sfx_entity, .playing, true);
+            try audio.set(sfx_entity, .index, 0);
+            try audio.set(sfx_entity, .volume, 0.6);
+            try app.set(sfx_entity, .is_game_scene, {}); // This entity belongs to the start scene
+            try app.set(sfx_entity, .is_sfx, {}); // Mark our audio entity is sfx, so we can distinguish it from bgm later.
+        }
+    }
+}
+
+fn updateCamera(
+    core: *mach.Core.Mod,
+    sprite: *gfx.Sprite.Mod,
+    sprite_pipeline: *gfx.SpritePipeline.Mod,
+    text_pipeline: *gfx.TextPipeline.Mod,
+    app: *Mod,
+    entities: *mach.Entities.Mod,
+    audio: *mach.Audio.Mod,
+) !void {
+    _ = core; // autofix
+    _ = sprite; // autofix
+    _ = entities; // autofix
+    _ = audio; // autofix
     // Our aim will be for our virtual canvas to be two thirds 1920x1080px. For our game, we do not
     // want the player to see more or less horizontally, as that may give an unfair advantage, but
     // they can see more or less vertically as that will only be more clouds or ground texture. As
@@ -809,19 +844,20 @@ fn tick(
     };
     const camera_target_diff = camera_target.sub(&app.state().camera_position);
     const camera_lag_seconds = 0.5;
-    app.state().camera_position = app.state().camera_position.add(&camera_target_diff.mulScalar(delta_time / camera_lag_seconds));
+    app.state().camera_position = app.state().camera_position.add(&camera_target_diff.mulScalar(app.state().delta_time / camera_lag_seconds));
 
     const view = Mat4x4.translate(app.state().camera_position.mulScalar(-1));
     const view_projection = projection.mul(&view);
     try sprite_pipeline.set(app.state().pipeline, .view_projection, view_projection);
     try text_pipeline.set(app.state().pipeline, .view_projection, view_projection);
+}
 
-    // Perform pre-render work
-    sprite_pipeline.schedule(.pre_render);
-    text_pipeline.schedule(.pre_render);
-
-    app.schedule(.update_effects);
-
+fn renderFrame(
+    core: *mach.Core.Mod,
+    sprite_pipeline: *gfx.SpritePipeline.Mod,
+    text_pipeline: *gfx.TextPipeline.Mod,
+    app: *Mod,
+) !void {
     // Create a command encoder for this frame
     const label = @tagName(name) ++ ".tick";
     app.state().frame_encoder = core.state().device.createCommandEncoder(&.{ .label = label });
@@ -849,6 +885,10 @@ fn tick(
         .color_attachments = &color_attachments,
     }));
 
+    // Perform pre-render work
+    sprite_pipeline.schedule(.pre_render);
+    text_pipeline.schedule(.pre_render);
+
     // Render our sprite batch
     sprite_pipeline.state().render_pass = app.state().frame_render_pass;
     sprite_pipeline.schedule(.render);
@@ -857,16 +897,13 @@ fn tick(
     text_pipeline.state().render_pass = app.state().frame_render_pass;
     text_pipeline.schedule(.render);
 
-    // Finish the frame once rendering is done.
-    app.schedule(.end_frame);
-
-    app.state().time += delta_time;
+    app.schedule(.finish_frame);
 }
 
-fn endFrame(app: *Mod, core: *mach.Core.Mod) !void {
+fn finishFrame(app: *Mod, core: *mach.Core.Mod) !void {
     // Finish render pass
     app.state().frame_render_pass.end();
-    const label = @tagName(name) ++ ".endFrame";
+    const label = @tagName(name) ++ ".finishFrame";
     var command = app.state().frame_encoder.finish(&.{ .label = label });
     core.state().queue.submit(&[_]*gpu.CommandBuffer{command});
     command.release();
