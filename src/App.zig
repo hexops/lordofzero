@@ -37,7 +37,7 @@ pub const systems = .{
     .update_start_scene = .{ .handler = updateStartScene },
     .update_game_scene = .{ .handler = updateGameScene },
     .update_camera = .{ .handler = updateCamera },
-    .update_effects = .{ .handler = updateEffects },
+    .update_anims = .{ .handler = updateAnims },
     .render_frame = .{ .handler = renderFrame },
     .finish_frame = .{ .handler = finishFrame },
 };
@@ -52,6 +52,7 @@ pub const components = .{
     .is_entity = .{ .type = void },
     .pixi_sprite = .{ .type = pixi.Sprite },
     .after_play_change_scene = .{ .type = Scene },
+    .sprite_anim = .{ .type = pixi.Animation },
     .sprite_timer = .{ .type = mach.Timer },
     .sprite_flipped = .{ .type = bool },
     .position = .{ .type = Vec3 },
@@ -509,38 +510,25 @@ fn changeScene(
     }
 }
 
-fn updateEffects(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mod) !void {
+fn updateAnims(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mod) !void {
     var q = try entities.query(.{
         .ids = mach.Entities.Mod.read(.id),
+        .anims = Mod.read(.sprite_anim),
         .timers = Mod.write(.sprite_timer),
         .flips = Mod.read(.sprite_flipped),
         .positions = Mod.read(.position),
     });
     while (q.next()) |v| {
-        for (v.ids, v.timers, v.flips, v.positions) |id, *timer, flip, position| {
-            const effect_animation_name = "ground_attack_main";
-            const effect_dissolve_name = "ground_attack_dissolve_main";
-
+        for (v.ids, v.anims, v.timers, v.flips, v.positions) |id, anim, *timer, flip, position| {
             const atlas = app.state().parsed_atlas.value;
-            const anim_info = animationByName(atlas, effect_animation_name).?;
-            const dissolve_animation_info = animationByName(atlas, effect_dissolve_name).?;
-
-            // Determine the next player animation frame
-            const animation_fps: f32 = @floatFromInt(anim_info.fps);
-            const i: usize = @intFromFloat(timer.read() * animation_fps);
-
-            if (i > (anim_info.length + dissolve_animation_info.length) - 2) {
+            const anim_fps: f32 = @floatFromInt(anim.fps);
+            const i: usize = @intFromFloat(timer.read() * anim_fps);
+            if (i > anim.length - 1) {
                 try entities.remove(id);
                 continue;
             }
-
-            const sprite_info: pixi.Sprite = if (i > anim_info.length)
-                atlas.sprites[dissolve_animation_info.start + (i - anim_info.length)]
-            else
-                atlas.sprites[anim_info.start + i];
-
             try SpriteCalc.apply(sprite, id, .{
-                .sprite_info = sprite_info,
+                .sprite_info = atlas.sprites[anim.start + i],
                 .pos = position,
                 .scale = Vec3.splat(world_scale),
                 .flipped = flip,
@@ -559,7 +547,7 @@ fn tick(
         .start => app.schedule(.update_start_scene),
         .game => app.schedule(.update_game_scene),
     }
-    app.schedule(.update_effects);
+    app.schedule(.update_anims);
     sprite.schedule(.update);
     app.schedule(.update_camera);
     app.schedule(.render_frame);
@@ -735,7 +723,7 @@ fn updateGameScene(
 
         const z_layer: f32 = 0;
         const position: Vec3 = vec3(
-            if (app.state().last_facing_direction.v[0] >= 0) pos.v[0] + 64.0 else pos.v[0] - 64.0,
+            if (app.state().last_facing_direction.v[0] >= 0) pos.v[0] + 128.0 else pos.v[0] - 64.0,
             pos.v[1],
             z_layer,
         );
@@ -748,6 +736,7 @@ fn updateGameScene(
         });
         try sprite.set(attack_fx, .pipeline, app.state().pipeline);
         try app.set(attack_fx, .is_game_scene, {});
+        try app.set(attack_fx, .sprite_anim, animationByName(atlas, "ground_attack_main").?);
         try app.set(attack_fx, .sprite_timer, try mach.Timer.start());
         try app.set(attack_fx, .sprite_flipped, flipped);
         try app.set(attack_fx, .position, position);
@@ -800,18 +789,10 @@ fn updateGameScene(
 }
 
 fn updateCamera(
-    core: *mach.Core.Mod,
-    sprite: *gfx.Sprite.Mod,
     sprite_pipeline: *gfx.SpritePipeline.Mod,
     text_pipeline: *gfx.TextPipeline.Mod,
     app: *Mod,
-    entities: *mach.Entities.Mod,
-    audio: *mach.Audio.Mod,
 ) !void {
-    _ = core; // autofix
-    _ = sprite; // autofix
-    _ = entities; // autofix
-    _ = audio; // autofix
     // Our aim will be for our virtual canvas to be two thirds 1920x1080px. For our game, we do not
     // want the player to see more or less horizontally, as that may give an unfair advantage, but
     // they can see more or less vertically as that will only be more clouds or ground texture. As
