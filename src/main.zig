@@ -16,3 +16,8 @@ pub fn main() !void {
     // Main loop
     while (try mach.core.tick()) {}
 }
+
+pub const use_sysgpu = switch (@import("builtin").target.os.tag) {
+    .macos => true,
+    else => false,
+};

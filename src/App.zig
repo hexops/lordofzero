@@ -53,7 +53,8 @@ pub const components = .{
     .pixi_sprite = .{ .type = pixi.Sprite },
     .after_play_change_scene = .{ .type = Scene },
     .sprite_anim = .{ .type = pixi.Animation },
-    .sprite_timer = .{ .type = mach.Timer },
+    .sprite_delete_after_anim = .{ .type = void },
+    .sprite_timer = .{ .type = f32 },
     .sprite_flipped = .{ .type = bool },
     .position = .{ .type = Vec3 },
 };
@@ -423,6 +424,7 @@ fn changeScene(
                     layer.gridTiles.len,
                     layer.__tilesetRelPath,
                 });
+                if (!layer.visible) continue;
                 for (app.state().parsed_level.value.defs.layers) |layer_def| {
                     if (layer_def.uid == layer.layerDefUid and
                         (layer_def.parallaxFactorX != 0 or layer_def.parallaxFactorY != 0)) continue :building_layers;
@@ -432,7 +434,6 @@ fn changeScene(
                     // Find the pixi sprite corresponding to this tile
                     if (pixi_ldtk.findSpriteByLayerSrc(layer.__tilesetRelPath.?, tile.src)) |ldtk_sprite| {
                         if (atlas.findSpriteIndex(ldtk_sprite.name)) |sprite_index| {
-                            const sprite_info = atlas.sprites[sprite_index];
                             const tile_sprite = try entities.new();
                             const pos = vec3(
                                 @as(f32, @floatFromInt(tile.px[0])) * world_scale,
@@ -440,6 +441,10 @@ fn changeScene(
                                 z_layer,
                             );
                             z_layer -= 1;
+
+                            const anim_info = animationBySpriteIndex(atlas, sprite_index);
+                            const anim_frame = if (anim_info) |anim| app.state().rand.random().uintLessThan(usize, @min(2, anim.length)) else 0;
+                            const sprite_info = if (anim_info) |anim| atlas.sprites[(anim.start + anim_frame)] else atlas.sprites[sprite_index];
 
                             try SpriteCalc.apply(sprite, tile_sprite, .{
                                 .sprite_info = sprite_info,
@@ -451,6 +456,13 @@ fn changeScene(
                             try app.set(tile_sprite, .pixi_sprite, sprite_info);
                             try app.set(tile_sprite, .is_game_scene, {});
                             try app.set(tile_sprite, .is_tile, {}); // This entity is an LDTK tile
+
+                            if (anim_info) |anim| {
+                                try app.set(tile_sprite, .sprite_anim, anim);
+                                try app.set(tile_sprite, .sprite_timer, @as(f32, @floatFromInt(anim_frame)) / @as(f32, @floatFromInt(anim.fps)));
+                                try app.set(tile_sprite, .sprite_flipped, false);
+                                try app.set(tile_sprite, .position, pos);
+                            }
                         }
                     } else {
                         // std.debug.panic("failed to find sprite for tile: {}\n", .{tile});
@@ -479,7 +491,6 @@ fn changeScene(
                     const tile_src: [2]i64 = .{ tile.x, tile.y };
                     if (pixi_ldtk.findSpriteByLayerSrc(tilesetRelPath.?, tile_src)) |ldtk_sprite| {
                         if (atlas.findSpriteIndex(ldtk_sprite.name)) |sprite_index| {
-                            const sprite_info = atlas.sprites[sprite_index];
                             const tile_sprite = try entities.new();
                             const pos = vec3(
                                 @as(f32, @floatFromInt(entity_instance.px[0])) * world_scale,
@@ -487,6 +498,10 @@ fn changeScene(
                                 z_layer,
                             );
                             z_layer -= 1;
+
+                            const anim_info = animationBySpriteIndex(atlas, sprite_index);
+                            const anim_frame = if (anim_info) |anim| app.state().rand.random().uintLessThan(usize, @min(2, anim.length)) else 0;
+                            const sprite_info = if (anim_info) |anim| atlas.sprites[(anim.start + anim_frame)] else atlas.sprites[sprite_index];
 
                             try SpriteCalc.apply(sprite, tile_sprite, .{
                                 .sprite_info = sprite_info,
@@ -498,6 +513,13 @@ fn changeScene(
                             try app.set(tile_sprite, .pixi_sprite, sprite_info);
                             try app.set(tile_sprite, .is_game_scene, {});
                             try app.set(tile_sprite, .is_entity, {}); // This entity is an LDTK entity
+
+                            if (anim_info) |anim| {
+                                try app.set(tile_sprite, .sprite_anim, anim);
+                                try app.set(tile_sprite, .sprite_timer, @as(f32, @floatFromInt(anim_frame)) / @as(f32, @floatFromInt(anim.fps)));
+                                try app.set(tile_sprite, .sprite_flipped, false);
+                                try app.set(tile_sprite, .position, pos);
+                            }
                         }
                     } else {
                         std.debug.panic("failed to find sprite for entity tile: {}\n", .{tile});
@@ -522,13 +544,21 @@ fn updateAnims(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mod)
         for (v.ids, v.anims, v.timers, v.flips, v.positions) |id, anim, *timer, flip, position| {
             const atlas = app.state().parsed_atlas.value;
             const anim_fps: f32 = @floatFromInt(anim.fps);
-            const i: usize = @intFromFloat(timer.read() * anim_fps);
-            if (i > anim.length - 1) {
-                try entities.remove(id);
-                continue;
+
+            timer.* += app.state().delta_time;
+            var frame = @as(usize, @intFromFloat(timer.* * anim_fps));
+
+            if (frame > anim.length - 1) {
+                if (app.get(id, .sprite_delete_after_anim) != null) {
+                    try entities.remove(id);
+                    continue;
+                } else {
+                    frame = frame % anim.length;
+                }
             }
+
             try SpriteCalc.apply(sprite, id, .{
-                .sprite_info = atlas.sprites[anim.start + i],
+                .sprite_info = atlas.sprites[anim.start + frame],
                 .pos = position,
                 .scale = Vec3.splat(world_scale),
                 .flipped = flip,
@@ -737,7 +767,8 @@ fn updateGameScene(
         try sprite.set(attack_fx, .pipeline, app.state().pipeline);
         try app.set(attack_fx, .is_game_scene, {});
         try app.set(attack_fx, .sprite_anim, animationByName(atlas, "ground_attack_main").?);
-        try app.set(attack_fx, .sprite_timer, try mach.Timer.start());
+        try app.set(attack_fx, .sprite_delete_after_anim, {});
+        try app.set(attack_fx, .sprite_timer, 0);
         try app.set(attack_fx, .sprite_flipped, flipped);
         try app.set(attack_fx, .position, position);
     }
@@ -957,6 +988,13 @@ fn rgb24ToRgba32(allocator: std.mem.Allocator, in: []zigimg.color.Rgb24) !zigimg
 
 fn animationByName(atlas: pixi.Atlas, anim_name: []const u8) ?pixi.Animation {
     for (atlas.animations) |anim| if (std.mem.eql(u8, anim.name, anim_name)) return anim;
+    return null;
+}
+
+fn animationBySpriteIndex(atlas: pixi.Atlas, sprite_index: usize) ?pixi.Animation {
+    for (atlas.animations) |anim| {
+        if (sprite_index >= anim.start and sprite_index <= (anim.start + anim.length - 1)) return anim;
+    }
     return null;
 }
 
