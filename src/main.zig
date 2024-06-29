@@ -7,6 +7,7 @@ pub const modules = .{
     mach.Audio,
     mach.gfx.text_modules,
     @import("App.zig"),
+    @import("Card.zig"),
 };
 
 pub fn main() !void {

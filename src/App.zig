@@ -6,6 +6,7 @@ const gfx = mach.gfx;
 const math = mach.math;
 const assets = @import("assets");
 
+const Card = @import("Card.zig");
 const pixi = @import("pixi.zig");
 const ldtk = @import("ldtk.zig");
 
@@ -56,6 +57,7 @@ pub const components = .{
     .sprite_delete_after_anim = .{ .type = void },
     .sprite_timer = .{ .type = f32 },
     .sprite_flipped = .{ .type = bool },
+    .parallax = .{ .type = [2]f32 },
     .position = .{ .type = Vec3 },
 };
 
@@ -104,12 +106,14 @@ prev_scene: Scene = .none,
 
 fn deinit(
     core: *mach.Core.Mod,
+    card: *Card.Mod,
     sprite_pipeline: *gfx.SpritePipeline.Mod,
     app: *Mod,
     audio: *mach.Audio.Mod,
     text: *gfx.Text.Mod,
     text_pipeline: *gfx.TextPipeline.Mod,
 ) !void {
+    card.schedule(.deinit);
     sprite_pipeline.schedule(.deinit);
     audio.schedule(.deinit);
     text.schedule(.deinit);
@@ -126,6 +130,7 @@ fn init(
     audio: *mach.Audio.Mod,
     text: *gfx.Text.Mod,
     text_pipeline: *gfx.TextPipeline.Mod,
+    card: *Card.Mod,
 ) !void {
     // Make the window fullscreen before it opens, if you want:
     // try core.set(core.state().main_window, .fullscreen, true);
@@ -137,6 +142,7 @@ fn init(
     audio.schedule(.init);
     text.schedule(.init);
     text_pipeline.schedule(.init);
+    card.schedule(.init);
     app.schedule(.after_init);
 }
 
@@ -241,6 +247,8 @@ fn changeScene(
     audio: *mach.Audio.Mod,
     text: *gfx.Text.Mod,
     text_style: *gfx.TextStyle.Mod,
+    card: *Card.Mod,
+    core: *mach.Core.Mod,
 ) !void {
     if (app.state().prev_scene == app.state().scene) return;
 
@@ -273,6 +281,9 @@ fn changeScene(
         },
     }
     app.state().prev_scene = app.state().scene;
+
+    // TODO: due to a bug in mach's module system we need this here. Need to investigate.
+    @setEvalBranchQuota(10_000);
 
     defer sprite.schedule(.update);
     defer text.schedule(.update);
@@ -340,6 +351,15 @@ fn changeScene(
                 try app.set(logo_sprite, .is_start_scene, {}); // This entity belongs to the start scene
                 try app.set(logo_sprite, .is_logo, {}); // This entity belongs to the start scene
             }
+
+            const bg_card = try entities.new();
+            try card.set(bg_card, .shader, core.state().device.createShaderModuleWGSL("card.wgsl", @embedFile("card.wgsl")));
+            try card.set(bg_card, .texture, try loadTexture(core, app.state().allocator, assets.lordofzero_png));
+            try card.set(bg_card, .transform, Mat4x4.translate(vec3(-1920 / 2, -1080 / 2, 0)));
+            try card.set(bg_card, .uv_transform, Mat3x3.translate(vec2(0, 0)));
+            try card.set(bg_card, .size, vec2(1920, 1080));
+            try app.set(bg_card, .is_start_scene, {}); // This entity belongs to the start scene
+            card.schedule(.update_pipelines);
         },
         .game => {
             // Load our "Morning Breaks" background music
@@ -408,7 +428,7 @@ fn changeScene(
 
             std.debug.print("loading level: {s} {}x{}px, layers: {}\n", .{ level.identifier, level.pxWid, level.pxHei, level.layerInstances.?.len });
             var z_layer: f32 = 0.0;
-            building_layers: for (level.layerInstances.?) |layer| {
+            for (level.layerInstances.?) |layer| {
                 std.debug.print(" layer: {s}, type={s}, visible={}, grid_size={}px, {}x{} (grid-based size)\n", .{
                     layer.__identifier,
                     @tagName(layer.__type),
@@ -425,9 +445,36 @@ fn changeScene(
                     layer.__tilesetRelPath,
                 });
                 if (!layer.visible) continue;
-                for (app.state().parsed_level.value.defs.layers) |layer_def| {
-                    if (layer_def.uid == layer.layerDefUid and
-                        (layer_def.parallaxFactorX != 0 or layer_def.parallaxFactorY != 0)) continue :building_layers;
+                if (layer.__pxTotalOffsetX != 0 or layer.__pxTotalOffsetY != 0) {
+                    @panic("layer offsets not supported yet");
+                }
+
+                const parallax: ?[2]f32 = blk: {
+                    for (app.state().parsed_level.value.defs.layers) |layer_def| {
+                        if (layer_def.uid == layer.layerDefUid) {
+                            if (layer_def.parallaxFactorX == 0 and layer_def.parallaxFactorY == 0) break :blk null;
+                            if (layer_def.parallaxScaling) std.debug.panic("parallax /scaling/ is not supported, found enabled on layer: {s}", .{layer.__identifier});
+                            break :blk .{ layer_def.parallaxFactorX, layer_def.parallaxFactorY };
+                        }
+                    }
+                    break :blk null;
+                };
+
+                if (parallax != null) {
+                    const layer_width: f32 = @floatFromInt(layer.__gridSize * layer.__cWid);
+                    const layer_height: f32 = @floatFromInt(layer.__gridSize * layer.__cHei);
+                    std.debug.print("making layer: {}x{}\n", .{ layer_width, layer_height });
+
+                    const bg_card = try entities.new();
+                    try card.set(bg_card, .shader, core.state().device.createShaderModuleWGSL("card.wgsl", @embedFile("card.wgsl")));
+                    try card.set(bg_card, .texture, try loadTexture(core, app.state().allocator, assets.lordofzero_png));
+                    try card.set(bg_card, .transform, Mat4x4.translate(vec3(0, -layer_height * world_scale, 0)));
+
+                    try card.set(bg_card, .uv_transform, Mat3x3.translate(vec2(0, 0)));
+                    try card.set(bg_card, .size, vec2(layer_width * world_scale, layer_height * world_scale));
+                    try app.set(bg_card, .is_game_scene, {}); // This entity belongs to the start scene
+
+                    card.schedule(.update_pipelines);
                 }
 
                 building_tiles: for (layer.gridTiles) |tile| {
@@ -456,12 +503,15 @@ fn changeScene(
                             try app.set(tile_sprite, .pixi_sprite, sprite_info);
                             try app.set(tile_sprite, .is_game_scene, {});
                             try app.set(tile_sprite, .is_tile, {}); // This entity is an LDTK tile
+                            try app.set(tile_sprite, .sprite_flipped, false);
+                            try app.set(tile_sprite, .position, pos);
 
                             if (anim_info) |anim| {
                                 try app.set(tile_sprite, .sprite_anim, anim);
                                 try app.set(tile_sprite, .sprite_timer, @as(f32, @floatFromInt(anim_frame)) / @as(f32, @floatFromInt(anim.fps)));
-                                try app.set(tile_sprite, .sprite_flipped, false);
-                                try app.set(tile_sprite, .position, pos);
+                            }
+                            if (parallax) |p| {
+                                try app.set(tile_sprite, .parallax, p);
                             }
                         }
                     } else {
@@ -513,12 +563,12 @@ fn changeScene(
                             try app.set(tile_sprite, .pixi_sprite, sprite_info);
                             try app.set(tile_sprite, .is_game_scene, {});
                             try app.set(tile_sprite, .is_entity, {}); // This entity is an LDTK entity
+                            try app.set(tile_sprite, .sprite_flipped, false);
+                            try app.set(tile_sprite, .position, pos);
 
                             if (anim_info) |anim| {
                                 try app.set(tile_sprite, .sprite_anim, anim);
                                 try app.set(tile_sprite, .sprite_timer, @as(f32, @floatFromInt(anim_frame)) / @as(f32, @floatFromInt(anim.fps)));
-                                try app.set(tile_sprite, .sprite_flipped, false);
-                                try app.set(tile_sprite, .position, pos);
                             }
                         }
                     } else {
@@ -539,9 +589,10 @@ fn updateAnims(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mod)
         .timers = Mod.write(.sprite_timer),
         .flips = Mod.read(.sprite_flipped),
         .positions = Mod.read(.position),
+        .pixi_sprites = Mod.write(.pixi_sprite),
     });
     while (q.next()) |v| {
-        for (v.ids, v.anims, v.timers, v.flips, v.positions) |id, anim, *timer, flip, position| {
+        for (v.ids, v.anims, v.timers, v.flips, v.positions, v.pixi_sprites) |id, anim, *timer, flip, position, *pixi_sprite| {
             const atlas = app.state().parsed_atlas.value;
             const anim_fps: f32 = @floatFromInt(anim.fps);
 
@@ -557,8 +608,9 @@ fn updateAnims(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mod)
                 }
             }
 
+            pixi_sprite.* = atlas.sprites[anim.start + frame];
             try SpriteCalc.apply(sprite, id, .{
-                .sprite_info = atlas.sprites[anim.start + frame],
+                .sprite_info = pixi_sprite.*,
                 .pos = position,
                 .scale = Vec3.splat(world_scale),
                 .flipped = flip,
@@ -570,6 +622,7 @@ fn updateAnims(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mod)
 fn tick(
     app: *Mod,
     sprite: *gfx.Sprite.Mod,
+    card: *Card.Mod,
 ) !void {
     app.schedule(.poll_input);
     switch (app.state().scene) {
@@ -579,6 +632,8 @@ fn tick(
     }
     app.schedule(.update_anims);
     sprite.schedule(.update);
+    card.state().time = app.state().time;
+    card.schedule(.update);
     app.schedule(.update_camera);
     app.schedule(.render_frame);
 }
@@ -730,7 +785,7 @@ fn updateGameScene(
         app.state().last_facing_direction = dir;
     }
     const base_speed = 250.0;
-    const speed: f32 = if (app.state().player_wants_to_run) base_speed * 2.0 else base_speed;
+    const speed: f32 = if (app.state().player_wants_to_run) base_speed * 10.0 else base_speed;
     const pos = app.state().player_position.add(
         &vec3(dir.v[0], 0, 0).mulScalar(speed).mulScalar(app.state().delta_time),
     );
@@ -758,8 +813,9 @@ fn updateGameScene(
             z_layer,
         );
 
+        const sprite_info = atlas.sprites[anim_info.start];
         try SpriteCalc.apply(sprite, attack_fx, .{
-            .sprite_info = atlas.sprites[anim_info.start],
+            .sprite_info = sprite_info,
             .pos = position,
             .scale = Vec3.splat(world_scale),
             .flipped = flipped,
@@ -770,6 +826,7 @@ fn updateGameScene(
         try app.set(attack_fx, .sprite_delete_after_anim, {});
         try app.set(attack_fx, .sprite_timer, 0);
         try app.set(attack_fx, .sprite_flipped, flipped);
+        try app.set(attack_fx, .pixi_sprite, sprite_info);
         try app.set(attack_fx, .position, position);
     }
 
@@ -820,9 +877,12 @@ fn updateGameScene(
 }
 
 fn updateCamera(
+    entities: *mach.Entities.Mod,
+    sprite: *gfx.Sprite.Mod,
     sprite_pipeline: *gfx.SpritePipeline.Mod,
     text_pipeline: *gfx.TextPipeline.Mod,
     app: *Mod,
+    card: *Card.Mod,
 ) !void {
     // Our aim will be for our virtual canvas to be two thirds 1920x1080px. For our game, we do not
     // want the player to see more or less horizontally, as that may give an unfair advantage, but
@@ -844,7 +904,7 @@ fn updateCamera(
 
     // Smooth camera following
     const map_left = 800;
-    const map_right = 18950;
+    const map_right = 18950 * 3;
     const camera_target = switch (app.state().scene) {
         .none => vec3(0, 0, 0),
         .start => vec3(0, 0, 0),
@@ -862,12 +922,70 @@ fn updateCamera(
     const view_projection = projection.mul(&view);
     try sprite_pipeline.set(app.state().pipeline, .view_projection, view_projection);
     try text_pipeline.set(app.state().pipeline, .view_projection, view_projection);
+
+    {
+        var q = try entities.query(.{
+            .ids = mach.Entities.Mod.read(.id),
+            .card_transforms = Card.Mod.read(.transform),
+        });
+        while (q.next()) |v| {
+            for (v.ids) |card_id| {
+                try card.set(card_id, .view_projection, view_projection);
+            }
+        }
+    }
+
+    var q = try entities.query(.{
+        .ids = mach.Entities.Mod.read(.id),
+        .parallaxes = Mod.read(.parallax),
+        .flips = Mod.read(.sprite_flipped),
+        .positions = Mod.read(.position),
+        .pixi_sprites = Mod.read(.pixi_sprite),
+    });
+    while (q.next()) |v| {
+        for (v.ids, v.parallaxes, v.flips, v.positions, v.pixi_sprites) |id, parallax, flip, position, pixi_sprite| {
+            // TODO: cleanup and/or remove this code
+            //
+            // const atlas = app.state().parsed_atlas.value;
+            // const anim_fps: f32 = @floatFromInt(anim.fps);
+
+            // timer.* += app.state().delta_time;
+            // var frame = @as(usize, @intFromFloat(timer.* * anim_fps));
+
+            // if (frame > anim.length - 1) {
+            //     if (app.get(id, .sprite_delete_after_anim) != null) {
+            //         try entities.remove(id);
+            //         continue;
+            //     } else {
+            //         frame = frame % anim.length;
+            //     }
+            // }
+
+            // var parallax2 = parallax;
+            // if (parallax2[0] != 0) {
+            //     parallax2[0] = 0.3;
+            //     parallax2[1] = 0.3;
+            // }
+            // const win_width = 1920.0 * (3.0 / 4.0);
+            // std.debug.print("camera position: {d:.02}\n", .{app.state().camera_position.v});
+
+            const win_width = 0;
+            const parallax2 = parallax;
+            try SpriteCalc.apply(sprite, id, .{
+                .sprite_info = pixi_sprite,
+                .pos = position.sub(&app.state().camera_position.add(&vec3(-(win_width * 8.0), 0, 0)).mul(&vec3(parallax2[0], parallax2[1], 1))),
+                .scale = Vec3.splat(world_scale),
+                .flipped = flip,
+            });
+        }
+    }
 }
 
 fn renderFrame(
     core: *mach.Core.Mod,
     sprite_pipeline: *gfx.SpritePipeline.Mod,
     text_pipeline: *gfx.TextPipeline.Mod,
+    card: *Card.Mod,
     app: *Mod,
 ) !void {
     // Create a command encoder for this frame
@@ -880,8 +998,8 @@ fn renderFrame(
 
     // Begin render pass
     const dark_gray = gpu.Color{ .r = 0.106, .g = 0.11, .b = 0.118, .a = 1 };
-    const sky_blue = gpu.Color{ .r = 0.776, .g = 0.988, .b = 1, .a = 1 };
-    _ = sky_blue;
+    const sky_blue = gpu.Color{ .r = 0.529, .g = 0.808, .b = 0.922, .a = 1 };
+    _ = sky_blue; // autofix
     const color_attachments = [_]gpu.RenderPassColorAttachment{.{
         .view = back_buffer_view,
         .clear_value = switch (app.state().scene) {
@@ -898,6 +1016,7 @@ fn renderFrame(
     }));
 
     // Perform pre-render work
+    card.schedule(.pre_render);
     sprite_pipeline.schedule(.pre_render);
     text_pipeline.schedule(.pre_render);
 
@@ -908,6 +1027,10 @@ fn renderFrame(
     // Render our text batch
     text_pipeline.state().render_pass = app.state().frame_render_pass;
     text_pipeline.schedule(.render);
+
+    // Render cards
+    card.state().render_pass = app.state().frame_render_pass;
+    card.schedule(.render);
 
     app.schedule(.finish_frame);
 }
