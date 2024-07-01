@@ -15,15 +15,17 @@ pub const components = .{
     .size = .{ .type = math.Vec2 },
 
     // Pipeline options below here
-    .texture = .{ .type = *gpu.Texture },
-    .texture2 = .{ .type = *gpu.Texture },
-    .texture3 = .{ .type = *gpu.Texture },
-    .texture4 = .{ .type = *gpu.Texture },
+    .texture_view = .{ .type = *gpu.TextureView },
+    .texture_view_size = .{ .type = math.Vec2 },
+    // .texture_view2 = .{ .type = *gpu.TextureView },
+    // .texture_view3 = .{ .type = *gpu.TextureView },
+    // .texture_view4 = .{ .type = *gpu.TextureView },
 
     .view_projection = .{ .type = math.Mat4x4 },
     .shader = .{ .type = *gpu.ShaderModule },
     .texture_sampler = .{ .type = *gpu.Sampler },
     .blend_state = .{ .type = gpu.BlendState },
+    .render_pass_id = .{ .type = u32 },
 
     .built = .{ .type = BuiltPipeline, .description = "internal" },
 };
@@ -53,10 +55,10 @@ const Uniforms = extern struct {
 pub const BuiltPipeline = struct {
     render: *gpu.RenderPipeline,
     texture_sampler: *gpu.Sampler,
-    texture: *gpu.Texture,
-    texture2: ?*gpu.Texture,
-    texture3: ?*gpu.Texture,
-    texture4: ?*gpu.Texture,
+    texture_view: *gpu.TextureView,
+    // texture_view2: ?*gpu.TextureView,
+    // texture_view3: ?*gpu.TextureView,
+    // texture_view4: ?*gpu.TextureView,
     bind_group: *gpu.BindGroup,
     uniforms: *gpu.Buffer,
 
@@ -68,10 +70,10 @@ pub const BuiltPipeline = struct {
     pub fn deinit(p: *const BuiltPipeline) void {
         p.render.release();
         p.texture_sampler.release();
-        p.texture.release();
-        if (p.texture2) |tex| tex.release();
-        if (p.texture3) |tex| tex.release();
-        if (p.texture4) |tex| tex.release();
+        p.texture_view.release();
+        // if (p.texture_view2) |v| v.release();
+        // if (p.texture_view3) |v| v.release();
+        // if (p.texture_view4) |v| v.release();
         p.bind_group.release();
         p.uniforms.release();
         p.transforms.release();
@@ -81,6 +83,7 @@ pub const BuiltPipeline = struct {
 };
 
 /// Which render pass should be used during .render
+render_pass_id: u32 = 0,
 render_pass: ?*gpu.RenderPassEncoder = null,
 time: f32 = 0,
 
@@ -100,16 +103,16 @@ fn deinit(entities: *mach.Entities.Mod) !void {
 }
 
 fn updatePipelines(entities: *mach.Entities.Mod, core: *mach.Core.Mod, card: *Mod) !void {
-    // Destroy all built render pipelines. We will rebuild them all.
-    try deinit(entities);
+    // // Destroy all built render pipelines. We will rebuild them all.
+    // try deinit(entities);
 
     var q = try entities.query(.{
         .ids = mach.Entities.Mod.read(.id),
-        .textures = Mod.read(.texture),
+        .texture_views = Mod.read(.texture_view),
     });
     while (q.next()) |v| {
-        for (v.ids, v.textures) |card_id, texture| {
-            try buildPipeline(core, card, card_id, texture);
+        for (v.ids, v.texture_views) |card_id, texture_view| {
+            try buildPipeline(core, card, card_id, texture_view);
         }
     }
 }
@@ -118,13 +121,13 @@ fn buildPipeline(
     core: *mach.Core.Mod,
     card: *Mod,
     card_id: mach.EntityID,
-    texture: *gpu.Texture,
+    texture_view: *gpu.TextureView,
 ) !void {
     // TODO: optimize by removing the component get/set calls in this function where possible
     // and instead use .write() queries
-    const opt_texture2 = card.get(card_id, .texture2);
-    const opt_texture3 = card.get(card_id, .texture3);
-    const opt_texture4 = card.get(card_id, .texture4);
+    // const opt_texture_view2 = card.get(card_id, .texture_view2);
+    // const opt_texture_view3 = card.get(card_id, .texture_view3);
+    // const opt_texture_view4 = card.get(card_id, .texture_view4);
     const opt_shader = card.get(card_id, .shader);
     const opt_texture_sampler = card.get(card_id, .texture_sampler);
     const opt_blend_state = card.get(card_id, .blend_state);
@@ -156,6 +159,10 @@ fn buildPipeline(
         .label = label ++ " sampler",
         .mag_filter = .nearest,
         .min_filter = .nearest,
+
+        .address_mode_u = .clamp_to_edge,
+        .address_mode_v = .clamp_to_edge,
+        .address_mode_w = .clamp_to_edge,
     });
     const uniforms = device.createBuffer(&.{
         .label = label ++ " uniforms",
@@ -173,20 +180,18 @@ fn buildPipeline(
                 gpu.BindGroupLayout.Entry.buffer(3, .{ .vertex = true }, .read_only_storage, false, 0),
                 gpu.BindGroupLayout.Entry.sampler(4, .{ .fragment = true }, .filtering),
                 gpu.BindGroupLayout.Entry.texture(5, .{ .fragment = true }, .float, .dimension_2d, false),
-                gpu.BindGroupLayout.Entry.texture(6, .{ .fragment = true }, .float, .dimension_2d, false),
-                gpu.BindGroupLayout.Entry.texture(7, .{ .fragment = true }, .float, .dimension_2d, false),
-                gpu.BindGroupLayout.Entry.texture(8, .{ .fragment = true }, .float, .dimension_2d, false),
+                // gpu.BindGroupLayout.Entry.texture(6, .{ .fragment = true }, .float, .dimension_2d, false),
+                // gpu.BindGroupLayout.Entry.texture(7, .{ .fragment = true }, .float, .dimension_2d, false),
+                // gpu.BindGroupLayout.Entry.texture(8, .{ .fragment = true }, .float, .dimension_2d, false),
             },
         }),
     );
     defer bind_group_layout.release();
 
-    const texture_view = texture.createView(&gpu.TextureView.Descriptor{ .label = label });
-    const texture2_view = if (opt_texture2) |tex| tex.createView(&gpu.TextureView.Descriptor{ .label = label }) else texture_view;
-    const texture3_view = if (opt_texture3) |tex| tex.createView(&gpu.TextureView.Descriptor{ .label = label }) else texture_view;
-    const texture4_view = if (opt_texture4) |tex| tex.createView(&gpu.TextureView.Descriptor{ .label = label }) else texture_view;
-    defer texture_view.release();
-    // TODO: texture views 2-4 leak
+    // const texture_view2 = if (opt_texture_view2) |v| v else texture_view;
+    // const texture_view3 = if (opt_texture_view3) |v| v else texture_view;
+    // const texture_view4 = if (opt_texture_view4) |v| v else texture_view;
+    // // TODO: texture views 2-4 leak
 
     const bind_group = device.createBindGroup(
         &gpu.BindGroup.Descriptor.init(.{
@@ -211,9 +216,9 @@ fn buildPipeline(
                     gpu.BindGroup.Entry.buffer(3, sizes, 0, @sizeOf(math.Vec2) * 1),
                 gpu.BindGroup.Entry.sampler(4, texture_sampler),
                 gpu.BindGroup.Entry.textureView(5, texture_view),
-                gpu.BindGroup.Entry.textureView(6, texture2_view),
-                gpu.BindGroup.Entry.textureView(7, texture3_view),
-                gpu.BindGroup.Entry.textureView(8, texture4_view),
+                // gpu.BindGroup.Entry.textureView(6, texture_view2),
+                // gpu.BindGroup.Entry.textureView(7, texture_view3),
+                // gpu.BindGroup.Entry.textureView(8, texture_view4),
             },
         }),
     );
@@ -264,10 +269,10 @@ fn buildPipeline(
     const built = BuiltPipeline{
         .render = render_pipeline,
         .texture_sampler = texture_sampler,
-        .texture = texture,
-        .texture2 = opt_texture2,
-        .texture3 = opt_texture3,
-        .texture4 = opt_texture4,
+        .texture_view = texture_view,
+        // .texture_view2 = opt_texture_view2,
+        // .texture_view3 = opt_texture_view3,
+        // .texture_view4 = opt_texture_view4,
         .bind_group = bind_group,
         .uniforms = uniforms,
         .transforms = transforms,
@@ -285,9 +290,12 @@ fn preRender(entities: *mach.Entities.Mod, core: *mach.Core.Mod, card: *Mod) !vo
     var q = try entities.query(.{
         .ids = mach.Entities.Mod.read(.id),
         .built_pipelines = Mod.read(.built),
+        .texture_view_sizes = Mod.read(.texture_view_size),
+        .render_pass_ids = Mod.read(.render_pass_id),
     });
     while (q.next()) |v| {
-        for (v.ids, v.built_pipelines) |id, built| {
+        for (v.ids, v.built_pipelines, v.texture_view_sizes, v.render_pass_ids) |id, built, texture_view_size, render_pass_id| {
+            if (render_pass_id != card.state().render_pass_id) continue;
             const view_projection = card.get(id, .view_projection) orelse blk: {
                 const width_px: f32 = @floatFromInt(mach.core.size().width);
                 const height_px: f32 = @floatFromInt(mach.core.size().height);
@@ -304,11 +312,8 @@ fn preRender(entities: *mach.Entities.Mod, core: *mach.Core.Mod, card: *Mod) !vo
             // Update uniform buffer
             const uniforms = Uniforms{
                 .view_projection = view_projection,
-                // TODO: dimensions of multi-textures, number of multi-textures present
-                .texture_size = math.vec2(
-                    @as(f32, @floatFromInt(built.texture.getWidth())),
-                    @as(f32, @floatFromInt(built.texture.getHeight())),
-                ),
+                // TODO(sysgpu): add the ability to get width/height of a texture view
+                .texture_size = texture_view_size,
                 .time = card.state().time,
             };
             encoder.writeBuffer(built.uniforms, 0, &[_]Uniforms{uniforms});
@@ -327,9 +332,12 @@ fn render(entities: *mach.Entities.Mod, card: *Mod) !void {
     // TODO: need a way to specify order of rendering with multiple pipelines
     var q = try entities.query(.{
         .built_pipelines = Mod.read(.built),
+        .render_pass_ids = Mod.read(.render_pass_id),
     });
     while (q.next()) |v| {
-        for (v.built_pipelines) |built| {
+        for (v.built_pipelines, v.render_pass_ids) |built, render_pass_id| {
+            if (render_pass_id != card.state().render_pass_id) continue;
+
             // Draw the card
             render_pass.setPipeline(built.render);
             // TODO: remove dynamic offsets?
@@ -343,6 +351,7 @@ fn render(entities: *mach.Entities.Mod, card: *Mod) !void {
 fn update(
     entities: *mach.Entities.Mod,
     core: *mach.Core.Mod,
+    card: *Mod,
 ) !void {
     const device = core.state().device;
     const label = @tagName(name) ++ ".updatePipeline";
@@ -354,9 +363,11 @@ fn update(
         .transforms = Mod.read(.transform),
         .uv_transforms = Mod.read(.uv_transform),
         .sizes = Mod.read(.size),
+        .render_pass_ids = Mod.read(.render_pass_id),
     });
     while (q.next()) |v| {
-        for (v.built_pipelines, v.transforms, v.uv_transforms, v.sizes) |built, transform, uv_transform, size| {
+        for (v.built_pipelines, v.transforms, v.uv_transforms, v.sizes, v.render_pass_ids) |built, transform, uv_transform, size, render_pass_id| {
+            if (render_pass_id != card.state().render_pass_id) continue;
             encoder.writeBuffer(built.transforms, 0, &[_]math.Mat4x4{transform});
             encoder.writeBuffer(built.uv_transforms, 0, &[_]math.Mat3x3{uv_transform});
             encoder.writeBuffer(built.sizes, 0, &[_]math.Vec2{size});

@@ -78,7 +78,7 @@ fn vertMain(
 
   uv *= sprite_size; // normalized -> pixels
   uv = (sprite_uv_transform * vec3<f32>(uv, 1)).xy; // apply sprite UV transform (pixels)
-  uv /= uniforms.texture_size; // pixels -> normalized
+  uv /= sprite_size; // pixels -> normalized
 
   var output : VertexOutput;
   output.Position = pos;
@@ -96,58 +96,69 @@ fn vertMain(
 fn fragMain(
   @location(0) uv: vec2<f32>
 ) -> @location(0) vec4<f32> {
-    // // start screen 'dragon claws' effect
-    // let time = uniforms.time + 50; // add 50s so that we're already into the animation starting
-    // let uv_x = uv.x;
-    // let uv_y = (1.0-uv.y);
-	// let c: f32 = 1. - fract((uv_y * 1.5 + time * 0.2) * hash11(floor(1. / uv_y * 10. + uv_x * 150.)) * 1.5 + 0.4);
-	// let sky: vec3<f32> = vec3<f32>(0.5, 0.7, 0.8) * ((uv_x * 0.75) - 0.5);
-	// return vec4<f32>(mix(vec3<f32>(0., 0., 0.), sky, c), 1.);
+    // Background image
+    let c = textureSample(spriteTexture, spriteSampler, uv);
 
-    // // rain
-    // let time = uniforms.time + 50; // add 50s so that we're already into the animation starting
-    // let rain_speed: f32 = 2.125;
-	// let rain_streak: f32 = 6.0;
-    // let rain_scale: f32 = 3.0;
-    // let uv_x = uv.x * rain_scale;
-    // let uv_y = (1.0-uv.y) * rain_scale;
-	// let c: f32 = 1. - fract((uv_y * 0.5 + time * rain_speed + 0.1) * hash11(floor(uv_y * 50. + uv_x * 150.)) * 0.5) * rain_streak;
-	// let droplet: vec3<f32> = vec3<f32>(0.5, 0.7, 0.8) * 1.5;
-    // if (c * 0.2 <= 0.0) {
-    //     discard;
-    // }
-	// return vec4<f32>(mix(vec3<f32>(0., 0., 0.), droplet, c * 0.2), c * 0.4);
+    let time = uniforms.time + 50; // add 50s so that we're already into the animation starting
+    let water_height = 0.8;
+    if (uv.y > water_height) {
+        let iuv = vec2<f32>(uv.x, ((1.-uv.y) + water_height) - (1.-water_height));
+        let water_uv = vec2<f32>(uv.x, 1.-((1.0 - uv.y) * (1.0/(1.-water_height)))); // 0.0 at top of water, 1.0 at bottom of screen
+        // let rain_speed: f32 = 2.125;
+        // let rain_streak: f32 = 6.0;
+        // let rain_scale: f32 = 3.0;
+        // let c: f32 = 1. - fract((iuv.y * 0.5 + time * rain_speed + 0.1) * hash11(floor(iuv.y * 50. + uv_x * 150.)) * 0.5) * rain_streak;
+        //let noise = 1.- clamp(1. - fract((iuv.x * 0.5 + time * 0.1) * hash11(floor(iuv.y * 200. + iuv.x * 1.0))) * 15.0, 0., 1.);
 
-    // Clouds and fog
-    let time: f32 = uniforms.time + 50; // add 50s so that we're already into the animation starting
-    // Fog
-	let fog_speed: vec2<f32> = vec2<f32>(0.2, 0.);
-	let fog_color: vec3<f32> = vec3<f32>(1., 1., 1.);
-    let fog_intensity: f32 = 0.3; //modulo2(time / 5.0, 1.0);
-    let fog_amount: f32 = fog_intensity;
-	let fog_noise: f32 = 0.5;
-	let fog_noise_speed: f32 = 0.02;
+        //let noise_x = hash11(floor(iuv.x * 10.0 + time));
+        //let noise_y = hash11(floor(iuv.y * 100.0));
+        //let noise_xy = hash11(floor(noise_x * noise_y * 100.0));
+        //let noise_vx = hash11((iuv.x) * time) * 0.01;
+        //let noise_vy = hash11((iuv.y) * time) * 0.01;
 
-    // Clouds
-	let cloud_speed: vec2<f32> = vec2<f32>(0.4, 0.);
-	let cloud_color: vec3<f32> = vec3<f32>(1., 1., 1.);
-    let cloud_intensity: f32 = 0.3; //modulo2(time / 5.0, 1.0);
-    let cloud_amount: f32 = cloud_intensity;
-	let cloud_noise: f32 = fog_noise*2.;
-	let cloud_noise_speed: f32 = fog_noise_speed*6.;
+        // float waves = fract(hash11(floor(uv.y * 200.)) * 2.0 + fract(time * 0.02 + uv.x));
+        // float distortion = fract(hash11(floor(uv.y * 200.)) * 2.0 + fract(time * 0.02 + uv.x * 3.));
+        // distortion = step(0.5, distortion);
+        // float distortionAngle = fract(hash11(floor((iuv.y) * 200.)) * 2.0 + fract(time * 0.01 + iuv.x * 0.1)) * 97.0721;
+        // vec2 distortionVec = vec2(sin(distortionAngle), cos(distortionAngle));
+        // fragColor = texture(iChannel0, uv + distortionVec * distortion * 0.01) * 0.7; 
+     	// fragColor = mix(vec4(0.0), fragColor, clamp((-uv.y + 0.7) * 3.0, 0.0, 1.0));
 
-    let cloud_alpha = cloudFog(uv, time, 1.0, cloud_speed, cloud_noise, cloud_noise_speed, cloud_amount, cloud_intensity);
-    let fog_alpha = cloudFog(uv, time, 0.0, fog_speed, fog_noise, fog_noise_speed, fog_amount, fog_intensity);
-    let color = alphaOver(vec4<f32>(fog_color, fog_alpha), vec4<f32>(cloud_color, cloud_alpha));
-    if (color.a <= 0.0) { discard; }
-    return color;
+        let waves = fract(hash11(floor((iuv.y) * 200.)) * 2.0 + fract(time * 0.02 + iuv.x));
+        let distortion = step(0.5, fract(hash11(floor((iuv.y) * 150.)) * 2.0 + fract((time * 0.2) + iuv.x * 6.)));
+        let distortion_angle = (fract(hash11(floor((iuv.y) * 150.)) * 2.0 + fract(time * 0.01 + iuv.x * 0.2))) * 97.0721;
+        let distortion_vec = vec2(sin(distortion_angle), cos(distortion_angle));
 
-    // // Background image
-    // var c = textureSample(spriteTexture, spriteSampler, fragUV);
-    // if (c.a <= 0.0) {
-    //     discard;
-    // }
-    // return c;
+        // // fragColor = texture(iChannel0, uv + distortionVec * distortion * 0.01) * 0.7; 
+     	// // fragColor = mix(vec4(0.0), fragColor, clamp((-uv.y + 0.7) * 3.0, 0.0, 1.0));
+
+        // fragColor = vec4((uv + distortionVec * distortion * 0.01).x);
+        // return vec4<f32>(0., (vec2<f32>(iuv.x, iuv.y) + distortion_vec).x, 0., 1.);
+        // return vec4<f32>(0., distortion, 0., 1.);
+
+        return mix(
+            vec4<f32>(0.),
+            textureSample(spriteTexture, spriteSampler, vec2<f32>(iuv.x, iuv.y) + distortion_vec * distortion * 0.01) * 0.7,
+            clamp(((1.-iuv.y) + 0.7) * 3.0, 0., 1.),
+        );
+        // // return mix(
+        // //     vec4<f32>(0.),
+        // //     textureSample(spriteTexture, spriteSampler, vec2<f32>(iuv.x, 1.-iuv.y) + distortion_vec * distortion * 0.01) * 0.7,
+        // //     clamp(((1.-iuv.y) + 0.7) * 3.0, 0., 1.),
+        // // );
+
+        // return vec4<f32>(0., distortion, 0., 1.);
+
+
+
+        // // let noise_x = hash11(floor(iuv.x * 10 + time * 0.2));
+        // // let noise_y = hash11(floor(iuv.y * 200 + time * 0.2));
+        // let nuv = vec2<f32>(iuv.x + noise_vx, iuv.y + noise_vy);
+        // // return vec4<f32>(0., nuv.y, 0., 1.);
+        // let c2 = textureSample(spriteTexture, spriteSampler, nuv);
+        // return c2;
+    }
+    return c;
 }
 
 // Straight (not premultiplied) alpha-over operation, drawing src over dst.

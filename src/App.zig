@@ -40,6 +40,7 @@ pub const systems = .{
     .update_camera = .{ .handler = updateCamera },
     .update_anims = .{ .handler = updateAnims },
     .render_frame = .{ .handler = renderFrame },
+    .post_process = .{ .handler = postProcess },
     .finish_frame = .{ .handler = finishFrame },
 };
 
@@ -51,6 +52,7 @@ pub const components = .{
     .is_logo = .{ .type = void },
     .is_tile = .{ .type = void },
     .is_entity = .{ .type = void },
+    .is_rtt_card = .{ .type = void },
     .pixi_sprite = .{ .type = pixi.Sprite },
     .after_play_change_scene = .{ .type = Scene },
     .sprite_anim = .{ .type = pixi.Animation },
@@ -103,6 +105,7 @@ parsed_level: ldtk.ParsedFile,
 parsed_ldtk_compatibility: pixi.ParsedLDTKCompatibility,
 scene: Scene = .game,
 prev_scene: Scene = .none,
+rtt_texture_view: *gpu.TextureView,
 
 fn deinit(
     core: *mach.Core.Mod,
@@ -121,6 +124,7 @@ fn deinit(
     core.schedule(.deinit);
     app.state().parsed_atlas.deinit();
     app.state().parsed_level.deinit();
+    app.state().rtt_texture_view.release();
 }
 
 fn init(
@@ -153,6 +157,7 @@ fn afterInit(
     text_pipeline: *gfx.TextPipeline.Mod,
     app: *Mod,
     audio: *mach.Audio.Mod,
+    card: *Card.Mod,
 ) !void {
     // Configure the audio module to send our app's .audio_state_change event when an entity's sound
     // finishes playing.
@@ -180,6 +185,35 @@ fn afterInit(
     // Preload .ldtk level file
     const parsed_level = try ldtk.File.parseSlice(allocator, assets.level_ldtk);
 
+    // Create the texture we'll render our scene to for post-processing effects.
+    const fb_width = core.get(core.state().main_window, .framebuffer_width).?;
+    const fb_height = core.get(core.state().main_window, .framebuffer_height).?;
+    const rtt_texture = core.state().device.createTexture(&gpu.Texture.Descriptor.init(.{
+        .size = .{ .width = fb_width, .height = fb_height },
+        .format = .bgra8_unorm,
+        .usage = .{ .texture_binding = true, .copy_dst = true, .render_attachment = true },
+    }));
+    const rtt_texture_view = rtt_texture.createView(null);
+
+    // TODO: cleanup/remove
+    // rtt_texture_view.reference();
+    const rtt_card = try entities.new();
+    try app.set(rtt_card, .is_rtt_card, {});
+
+    const pass1 = try std.fs.cwd().readFileAllocOptions(std.heap.c_allocator, "src/pass1.wgsl", std.math.maxInt(usize), null, @alignOf(u8), 0);
+    try card.set(rtt_card, .shader, core.state().device.createShaderModuleWGSL("pass1.wgsl", pass1));
+
+    // try card.set(rtt_card, .shader, core.state().device.createShaderModuleWGSL("pass1.wgsl", @embedFile("pass1.wgsl")));
+    try card.set(rtt_card, .texture_view, rtt_texture_view);
+    try card.set(rtt_card, .texture_view_size, vec2(@floatFromInt(rtt_texture.getWidth()), @floatFromInt(rtt_texture.getHeight())));
+    try card.set(rtt_card, .blend_state, gpu.BlendState{});
+
+    try card.set(rtt_card, .uv_transform, Mat3x3.translate(vec2(0, 0)));
+    try card.set(rtt_card, .render_pass_id, 1);
+    try card.set(rtt_card, .transform, Mat4x4.translate(vec3(0, 0, 0)));
+    // TODO: why can't we schedule this here
+    // card.schedule(.update_pipelines);
+
     const player = try entities.new();
     app.init(.{
         .player = player,
@@ -198,6 +232,7 @@ fn afterInit(
         .parsed_atlas = parsed_atlas,
         .parsed_level = parsed_level,
         .parsed_ldtk_compatibility = parsed_ldtk_compatibility,
+        .rtt_texture_view = rtt_texture_view,
     });
 
     // Load the initial starting screen scene
@@ -352,12 +387,16 @@ fn changeScene(
                 try app.set(logo_sprite, .is_logo, {}); // This entity belongs to the start scene
             }
 
+            const lordofzero_png_texture = try loadTexture(core, app.state().allocator, assets.lordofzero_png);
+            defer lordofzero_png_texture.release();
             const bg_card = try entities.new();
             try card.set(bg_card, .shader, core.state().device.createShaderModuleWGSL("card.wgsl", @embedFile("card.wgsl")));
-            try card.set(bg_card, .texture, try loadTexture(core, app.state().allocator, assets.lordofzero_png));
+            try card.set(bg_card, .texture_view, lordofzero_png_texture.createView(null));
+            try card.set(bg_card, .texture_view_size, vec2(@floatFromInt(lordofzero_png_texture.getWidth()), @floatFromInt(lordofzero_png_texture.getHeight())));
             try card.set(bg_card, .transform, Mat4x4.translate(vec3(-1920 / 2, -1080 / 2, 0)));
             try card.set(bg_card, .uv_transform, Mat3x3.translate(vec2(0, 0)));
             try card.set(bg_card, .size, vec2(1920, 1080));
+            try card.set(bg_card, .render_pass_id, 0);
             try app.set(bg_card, .is_start_scene, {}); // This entity belongs to the start scene
             card.schedule(.update_pipelines);
         },
@@ -465,13 +504,16 @@ fn changeScene(
                     const layer_height: f32 = @floatFromInt(layer.__gridSize * layer.__cHei);
                     std.debug.print("making layer: {}x{}\n", .{ layer_width, layer_height });
 
+                    const lordofzero_png_texture = try loadTexture(core, app.state().allocator, assets.lordofzero_png);
+                    defer lordofzero_png_texture.release();
                     const bg_card = try entities.new();
                     try card.set(bg_card, .shader, core.state().device.createShaderModuleWGSL("card.wgsl", @embedFile("card.wgsl")));
-                    try card.set(bg_card, .texture, try loadTexture(core, app.state().allocator, assets.lordofzero_png));
+                    try card.set(bg_card, .texture_view, lordofzero_png_texture.createView(null));
+                    try card.set(bg_card, .texture_view_size, vec2(@floatFromInt(lordofzero_png_texture.getWidth()), @floatFromInt(lordofzero_png_texture.getHeight())));
                     try card.set(bg_card, .transform, Mat4x4.translate(vec3(0, -layer_height * world_scale, 0)));
-
                     try card.set(bg_card, .uv_transform, Mat3x3.translate(vec2(0, 0)));
                     try card.set(bg_card, .size, vec2(layer_width * world_scale, layer_height * world_scale));
+                    try card.set(bg_card, .render_pass_id, 0);
                     try app.set(bg_card, .is_game_scene, {}); // This entity belongs to the start scene
 
                     card.schedule(.update_pipelines);
@@ -883,7 +925,9 @@ fn updateCamera(
     text_pipeline: *gfx.TextPipeline.Mod,
     app: *Mod,
     card: *Card.Mod,
+    core: *mach.Core.Mod,
 ) !void {
+    _ = core; // autofix
     // Our aim will be for our virtual canvas to be two thirds 1920x1080px. For our game, we do not
     // want the player to see more or less horizontally, as that may give an unfair advantage, but
     // they can see more or less vertically as that will only be more clouds or ground texture. As
@@ -930,7 +974,17 @@ fn updateCamera(
         });
         while (q.next()) |v| {
             for (v.ids) |card_id| {
-                try card.set(card_id, .view_projection, view_projection);
+                if (app.get(card_id, .is_rtt_card) == null) {
+                    try card.set(card_id, .view_projection, view_projection);
+                } else {
+                    try card.set(card_id, .view_projection, projection);
+                    try card.set(card_id, .transform, Mat4x4.translate(vec3(
+                        -width_px / 2,
+                        -height_px / 2,
+                        0,
+                    )));
+                    try card.set(card_id, .size, vec2(width_px, height_px));
+                }
             }
         }
     }
@@ -992,16 +1046,13 @@ fn renderFrame(
     const label = @tagName(name) ++ ".tick";
     app.state().frame_encoder = core.state().device.createCommandEncoder(&.{ .label = label });
 
-    // Grab the back buffer of the swapchain
-    const back_buffer_view = mach.core.swap_chain.getCurrentTextureView().?;
-    defer back_buffer_view.release();
-
-    // Begin render pass
     const dark_gray = gpu.Color{ .r = 0.106, .g = 0.11, .b = 0.118, .a = 1 };
     const sky_blue = gpu.Color{ .r = 0.529, .g = 0.808, .b = 0.922, .a = 1 };
     _ = sky_blue; // autofix
-    const color_attachments = [_]gpu.RenderPassColorAttachment{.{
-        .view = back_buffer_view,
+
+    // Begin a render pass that will render our scene to a texture (rtt == render to texture)
+    const rtt_color_attachments = [_]gpu.RenderPassColorAttachment{.{
+        .view = app.state().rtt_texture_view,
         .clear_value = switch (app.state().scene) {
             .none => dark_gray,
             .start => dark_gray,
@@ -1012,7 +1063,7 @@ fn renderFrame(
     }};
     app.state().frame_render_pass = app.state().frame_encoder.beginRenderPass(&gpu.RenderPassDescriptor.init(.{
         .label = label,
-        .color_attachments = &color_attachments,
+        .color_attachments = &rtt_color_attachments,
     }));
 
     // Perform pre-render work
@@ -1029,6 +1080,43 @@ fn renderFrame(
     text_pipeline.schedule(.render);
 
     // Render cards
+    card.state().render_pass_id = 0;
+    card.state().render_pass = app.state().frame_render_pass;
+    card.schedule(.render);
+
+    app.schedule(.post_process);
+}
+
+fn postProcess(
+    card: *Card.Mod,
+    app: *Mod,
+) !void {
+    const label = @tagName(name) ++ ".tick";
+
+    app.state().frame_render_pass.end();
+    app.state().frame_render_pass.release();
+
+    // Grab the back buffer of the swapchain
+    const back_buffer_view = mach.core.swap_chain.getCurrentTextureView().?;
+    defer back_buffer_view.release();
+
+    // Begin render pass
+    const color_attachments = [_]gpu.RenderPassColorAttachment{.{
+        .view = back_buffer_view,
+        .clear_value = std.mem.zeroes(gpu.Color),
+        .load_op = .clear,
+        .store_op = .store,
+    }};
+    app.state().frame_render_pass = app.state().frame_encoder.beginRenderPass(&gpu.RenderPassDescriptor.init(.{
+        .label = label,
+        .color_attachments = &color_attachments,
+    }));
+
+    // Perform pre-render work
+    card.schedule(.pre_render);
+
+    // Render cards
+    card.state().render_pass_id = 1;
     card.state().render_pass = app.state().frame_render_pass;
     card.schedule(.render);
 
