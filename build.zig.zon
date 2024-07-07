@@ -3,8 +3,8 @@
     .version = "0.0.0",
     .dependencies = .{
         .mach = .{
-            .url = "https://pkg.machengine.org/mach/b72f0e11b6d292c2b60789359a61f7ee6d7dc371.tar.gz",
-            .hash = "122015e1dac4afaf275f7f2adde3814e6a27f5799cbef96bb487ee305f7e33f4dca3",
+            .url = "https://pkg.machengine.org/mach/2f0415a60325868a72eab08e93746c804b9e66b9.tar.gz",
+            .hash = "12206c34197e552379b7b83b9b71e16230d3c87b5bff689f80d686b41b3486e9f486",
         },
         .zigimg = .{
             .url = "https://github.com/slimsag/zigimg/archive/d40d8538f1d130565086eb9ea3accf792f87d6a0.tar.gz",

@@ -10,6 +10,7 @@ pub const sfx = struct {
     pub const footsteps = @embedFile("sfx/footsteps.opus");
     pub const freeze = @embedFile("sfx/freeze.opus");
     pub const morning_bells = @embedFile("sfx/morning_bells.opus");
+    pub const grimble = @embedFile("sfx/grimble.opus");
 };
 
 pub const level_ldtk = @embedFile("level.ldtk");

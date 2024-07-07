@@ -39,6 +39,7 @@ pub const systems = .{
     .update_game_scene = .{ .handler = updateGameScene },
     .update_camera = .{ .handler = updateCamera },
     .update_anims = .{ .handler = updateAnims },
+    .update_sfx = .{ .handler = updateSfx },
     .render_frame = .{ .handler = renderFrame },
     .post_process = .{ .handler = postProcess },
     .finish_frame = .{ .handler = finishFrame },
@@ -53,6 +54,7 @@ pub const components = .{
     .is_tile = .{ .type = void },
     .is_entity = .{ .type = void },
     .is_rtt_card = .{ .type = void },
+    .is_grimble = .{ .type = void },
     .pixi_sprite = .{ .type = pixi.Sprite },
     .after_play_change_scene = .{ .type = Scene },
     .sprite_anim = .{ .type = pixi.Animation },
@@ -61,6 +63,7 @@ pub const components = .{
     .sprite_flipped = .{ .type = bool },
     .parallax = .{ .type = [2]f32 },
     .position = .{ .type = Vec3 },
+    .child_sfx = .{ .type = mach.EntityID },
 };
 
 const Scene = enum {
@@ -263,8 +266,23 @@ fn audioStateChange(
             } else {
                 // Free buffer
                 app.state().allocator.free(audio.get(id, .samples).?);
+
                 // Remove the entity for the old sound
                 try entities.remove(id);
+
+                // If any entity had this sound as a child_sfx, then remove it now so there is no
+                // dangling reference.
+                var q2 = try entities.query(.{
+                    .ids = mach.Entities.Mod.read(.id),
+                    .child_sfx = Mod.read(.child_sfx),
+                });
+                while (q2.next()) |v2| {
+                    for (v2.ids, v2.child_sfx) |entity_id, child_sfx| {
+                        if (child_sfx == id) {
+                            try app.remove(entity_id, .child_sfx);
+                        }
+                    }
+                }
             }
 
             if (app.get(id, .after_play_change_scene)) |scene| {
@@ -402,7 +420,7 @@ fn changeScene(
         },
         .game => {
             // Load our "Morning Breaks" background music
-            const bgm_fbs = std.io.fixedBufferStream(assets.bgm.morning_breaks);
+            const bgm_fbs = std.io.fixedBufferStream(assets.bgm.night_falls);
             const bgm_sound_stream = std.io.StreamSource{ .const_buffer = bgm_fbs };
             const bgm = try mach.Audio.Opus.decodeStream(app.state().allocator, bgm_sound_stream);
 
@@ -571,6 +589,15 @@ fn changeScene(
                         }
                     }
 
+                    const is_grimble = blk: {
+                        for (entity_instance.__tags) |tag| {
+                            if (std.mem.eql(u8, tag, "grimble")) {
+                                break :blk true;
+                            }
+                        }
+                        break :blk false;
+                    };
+
                     const tilesetRelPath = blk: {
                         for (app.state().parsed_level.value.defs.tilesets) |tileset_def| {
                             if (tileset_def.uid != tile.tilesetUid) continue;
@@ -592,7 +619,15 @@ fn changeScene(
                             z_layer -= 1;
 
                             const anim_info = animationBySpriteIndex(atlas, sprite_index);
-                            const anim_frame = if (anim_info) |anim| app.state().rand.random().uintLessThan(usize, @min(2, anim.length)) else 0;
+                            const anim_frame = if (anim_info) |anim| app.state().rand.random().uintLessThan(
+                                usize,
+                                if (is_grimble)
+                                    // Grimble animations are very out of sync with eachother
+                                    anim.length
+                                else
+                                    // Other animations are only slightly out of sync with eachother
+                                    @min(2, anim.length),
+                            ) else 0;
                             const sprite_info = if (anim_info) |anim| atlas.sprites[(anim.start + anim_frame)] else atlas.sprites[sprite_index];
 
                             try SpriteCalc.apply(sprite, tile_sprite, .{
@@ -601,6 +636,8 @@ fn changeScene(
                                 .scale = Vec3.splat(world_scale),
                                 .flipped = false,
                             });
+
+                            if (is_grimble) try app.set(tile_sprite, .is_grimble, {});
                             try sprite.set(tile_sprite, .pipeline, app.state().pipeline);
                             try app.set(tile_sprite, .pixi_sprite, sprite_info);
                             try app.set(tile_sprite, .is_game_scene, {});
@@ -610,7 +647,10 @@ fn changeScene(
 
                             if (anim_info) |anim| {
                                 try app.set(tile_sprite, .sprite_anim, anim);
-                                try app.set(tile_sprite, .sprite_timer, @as(f32, @floatFromInt(anim_frame)) / @as(f32, @floatFromInt(anim.fps)));
+                                try app.set(tile_sprite, .sprite_timer, if (is_grimble)
+                                    app.state().rand.random().float(f32) * 10.0
+                                else
+                                    @as(f32, @floatFromInt(anim_frame)) / @as(f32, @floatFromInt(anim.fps)));
                             }
                         }
                     } else {
@@ -624,7 +664,12 @@ fn changeScene(
     }
 }
 
-fn updateAnims(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mod) !void {
+fn updateAnims(
+    sprite: *gfx.Sprite.Mod,
+    app: *Mod,
+    entities: *mach.Entities.Mod,
+    audio: *mach.Audio.Mod,
+) !void {
     var q = try entities.query(.{
         .ids = mach.Entities.Mod.read(.id),
         .anims = Mod.read(.sprite_anim),
@@ -640,13 +685,30 @@ fn updateAnims(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mod)
 
             timer.* += app.state().delta_time;
             var frame = @as(usize, @intFromFloat(timer.* * anim_fps));
-
-            if (frame > anim.length - 1) {
+            if (frame >= anim.length - 1) {
+                frame = if (anim.length - 1 == 0) 0 else frame % (anim.length - 1);
                 if (app.get(id, .sprite_delete_after_anim) != null) {
                     try entities.remove(id);
                     continue;
-                } else {
-                    frame = frame % anim.length;
+                } else if (timer.* > 1.0 and app.get(id, .is_grimble) != null) {
+                    timer.* -= 1.0;
+
+                    // Load our "grimble" sfx
+                    const sfx_fbs = std.io.fixedBufferStream(assets.sfx.grimble);
+                    const sfx_sound_stream = std.io.StreamSource{ .const_buffer = sfx_fbs };
+                    const sfx = try mach.Audio.Opus.decodeStream(app.state().allocator, sfx_sound_stream);
+
+                    // Create an audio entity to play our sfx
+                    const sfx_entity = try entities.new();
+                    try audio.set(sfx_entity, .samples, sfx.samples);
+                    try audio.set(sfx_entity, .channels, sfx.channels);
+                    try audio.set(sfx_entity, .playing, true);
+                    try audio.set(sfx_entity, .index, 0);
+                    try audio.set(sfx_entity, .volume, 0.2);
+                    try app.set(sfx_entity, .is_game_scene, {}); // This entity belongs to the game scene
+                    try app.set(sfx_entity, .is_sfx, {}); // Mark our audio entity is sfx, so we can distinguish it from bgm later.
+                    try app.set(sfx_entity, .position, position);
+                    try app.set(id, .child_sfx, sfx_entity);
                 }
             }
 
@@ -657,6 +719,54 @@ fn updateAnims(sprite: *gfx.Sprite.Mod, app: *Mod, entities: *mach.Entities.Mod)
                 .scale = Vec3.splat(world_scale),
                 .flipped = flip,
             });
+        }
+    }
+}
+
+fn updateSfx(
+    sprite: *gfx.Sprite.Mod,
+    app: *Mod,
+    entities: *mach.Entities.Mod,
+) !void {
+    // Update grimble positions first
+    // TODO: move this to somewhere else, not in updateSfx
+    var q2 = try entities.query(.{
+        .ids = mach.Entities.Mod.read(.id),
+        .flips = Mod.write(.sprite_flipped),
+        .positions = Mod.write(.position),
+        .pixi_sprites = Mod.read(.pixi_sprite),
+        .is_grimbles = Mod.read(.is_grimble),
+    });
+    while (q2.next()) |v| {
+        for (v.ids, v.flips, v.positions, v.pixi_sprites) |id, *flip, *position, pixi_sprite| {
+            flip.* = app.state().player_position.x() < position.*.x();
+            const flip_float: f32 = if (flip.*) -1.0 else 1.0;
+            position.* = position.*.add(&vec3(flip_float * 250.0 * app.state().delta_time, 0, 0));
+            try SpriteCalc.apply(sprite, id, .{
+                .sprite_info = pixi_sprite,
+                .pos = position.*,
+                .scale = Vec3.splat(world_scale),
+                .flipped = flip.*,
+            });
+
+            if (app.get(id, .child_sfx)) |sfx_entity| {
+                try app.set(sfx_entity, .position, position.*);
+            }
+        }
+    }
+
+    // Update sfx
+    var q = try entities.query(.{
+        .volumes = mach.Audio.Mod.write(.volume),
+        .positions = Mod.read(.position),
+    });
+    while (q.next()) |v| {
+        for (v.volumes, v.positions) |*volume, position| {
+            const player_pos = vec2(app.state().player_position.x(), 0);
+            const sound_pos = vec2(position.x(), 0);
+            // std.debug.print("player: {d:.02}, sfx: {d:.02}\n", .{ app.state().player_position.v, position.v });
+            const dist = player_pos.dist(&sound_pos);
+            volume.* = 1.0 - @min(1.0, dist / 1500.0);
         }
     }
 }
@@ -673,6 +783,7 @@ fn tick(
         .game => app.schedule(.update_game_scene),
     }
     app.schedule(.update_anims);
+    app.schedule(.update_sfx);
     sprite.schedule(.update);
     card.state().time = app.state().time;
     card.schedule(.update);
@@ -892,7 +1003,7 @@ fn updateGameScene(
             try audio.set(sfx_entity, .channels, sfx.channels);
             try audio.set(sfx_entity, .playing, true);
             try audio.set(sfx_entity, .index, 0);
-            try audio.set(sfx_entity, .volume, 2.3);
+            try audio.set(sfx_entity, .volume, 3.3);
             try app.set(sfx_entity, .is_game_scene, {}); // This entity belongs to the start scene
             try app.set(sfx_entity, .is_sfx, {}); // Mark our audio entity is sfx, so we can distinguish it from bgm later.
         }
@@ -925,9 +1036,7 @@ fn updateCamera(
     text_pipeline: *gfx.TextPipeline.Mod,
     app: *Mod,
     card: *Card.Mod,
-    core: *mach.Core.Mod,
 ) !void {
-    _ = core; // autofix
     // Our aim will be for our virtual canvas to be two thirds 1920x1080px. For our game, we do not
     // want the player to see more or less horizontally, as that may give an unfair advantage, but
     // they can see more or less vertically as that will only be more clouds or ground texture. As
@@ -1088,6 +1197,7 @@ fn renderFrame(
 }
 
 fn postProcess(
+    sprite_pipeline: *gfx.SpritePipeline.Mod,
     card: *Card.Mod,
     app: *Mod,
 ) !void {
@@ -1114,6 +1224,7 @@ fn postProcess(
 
     // Perform pre-render work
     card.schedule(.pre_render);
+    sprite_pipeline.schedule(.pre_render);
 
     // Render cards
     card.state().render_pass_id = 1;
