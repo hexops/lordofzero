@@ -961,8 +961,8 @@ fn updateGameScene(
 
         const z_layer: f32 = 0;
         const position: Vec3 = vec3(
-            if (app.state().last_facing_direction.v[0] >= 0) pos.v[0] + 128.0 else pos.v[0] - 64.0,
-            pos.v[1],
+            if (app.state().last_facing_direction.v[0] >= 0) pos.v[0] - (48.0 * world_scale) else pos.v[0] + (48.0 * world_scale),
+            pos.v[1] + (256.0 * world_scale),
             z_layer,
         );
 
