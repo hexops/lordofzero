@@ -23,7 +23,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     exe.root_module.addImport("mach", mach_dep.module("mach"));
-    @import("mach").link(mach_dep.builder, exe);
 
     // Add zigimg dependency
     const zigimg_dep = b.dependency("zigimg", .{

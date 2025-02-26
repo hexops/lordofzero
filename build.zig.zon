@@ -3,12 +3,13 @@
     .version = "0.0.0",
     .dependencies = .{
         .mach = .{
-            .url = "https://pkg.machengine.org/mach/2f0415a60325868a72eab08e93746c804b9e66b9.tar.gz",
-            .hash = "12206c34197e552379b7b83b9b71e16230d3c87b5bff689f80d686b41b3486e9f486",
+            // .url = "https://pkg.machengine.org/mach/c56d596ea90be5502db7a83940f5cca4cce1494f.tar.gz",
+            // .hash = "1220301155ab5b19acce86e70c1e844249a6c617e6e36818cfeb5b5a993acee01ab4",
+            .path = "../mach",
         },
         .zigimg = .{
-            .url = "https://github.com/slimsag/zigimg/archive/d40d8538f1d130565086eb9ea3accf792f87d6a0.tar.gz",
-            .hash = "1220fc66474870d6ed00f442556718cb0dc7a4cb8137074370689aa8922bcc4a8bd6",
+            .url = "https://github.com/zigimg/zigimg/archive/48bfe6d413a5b3723a7bcf36f1fabbba30efef68.tar.gz",
+            .hash = "12201b874ac217853e59f55477b96cb7a66d43a5930ed9b4f0cfc7113efc8f5a6449",
         },
     },
     .paths = .{
